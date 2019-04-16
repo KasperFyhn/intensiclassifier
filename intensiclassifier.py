@@ -1,13 +1,26 @@
 import nltk
-from bs4 import BeautifulSoup
 from nltk.corpus import wordnet as wn, movie_reviews
 import nltk.classify as cl
 import re
 import random
+import textio
 
 #MOVIES = [(list(movie_reviews.words(fileid)), category)
 #          for category in movie_reviews.categories()
 #          for fileid in movie_reviews.fileids(category)]
+
+
+class Word(str):
+
+    def __new__(cls, word_and_tag):
+
+        items = word_and_tag.split('\\')
+        return str.__new__(cls, items[0])
+
+    def __init__(self, word_and_tag):
+
+        items = word_and_tag.split('\\')
+        self.pos = items[1]
 
 
 def is_adjective(word: str):
@@ -30,63 +43,6 @@ def is_adverb(word: str):
         return True
     else:
         return False
-
-
-def processed_stars(test=False,
-                    categories=('books', 'dvd', 'electronics', 'kitchen')):
-    """Extracts all features from the given categoires in 'processed stars' and
-    return them in a list of tuple(dict(feature: count), label)."""
-
-    if isinstance(categories, str):
-        categories = [categories]
-
-    # loop over each category and extract features and labels per line
-    # append these to the final
-    labeled_features = []
-    for category in categories:
-        # open the relevant file, either train or test
-        file = f'./processed_stars/{category}/'
-        if not test:
-            file += 'train'
-        elif test:
-            file += 'test'
-        with open(file, encoding='utf-8') as f:
-            raw = f.read()
-            # one document per line, so split into lines
-            reviews = raw.split('\n')
-            # extract features and their counts for each line
-            features = [{ftr[0].strip(): int(ftr[1])
-                         for ftr in re.findall(r'(.*?(?<!#label#)):(\d)', line)}
-                        for line in reviews]
-            # extract all labels
-            labels = re.findall(r'#label#:(\d+.\d+)', raw)
-            # zip the features list and labels into tuples and add to final list
-            labeled_features += [(f_set, float(label))
-                                 for f_set, label in zip(features, labels)]
-
-    return labeled_features
-
-
-def extract_reviews(review_file):
-    """Extract reviews from a structured XML file returned as list(review, tag).
-    """
-
-    print(f'Decoding {review_file} ...')
-    with open(review_file, encoding='ISO-8859-1') as f:
-        raw = f.read()
-
-    print('Extracting review text and labels ...')
-    # extract each review and parse them
-    reviews = re.findall(r'<review>(.+?)</review>', raw, flags=re.DOTALL)
-    reviews = [re.findall(
-        r'<rating>(.+?)</rating>.*?<review_text>(.+?)</review_text>', review,
-        flags=re.DOTALL
-    )[0] for review in reviews]
-    # get cleaned review text and the tag
-    reviews = [(re.sub(r'\s+', ' ', review[1]).split(), review[0].strip())
-               for review in reviews]
-
-    return reviews
 
 
 def frequent_adjectives(reviews: list, threshold=5, bigrams=False):
@@ -196,8 +152,19 @@ def uni_vs_bigram(data, test_proportion=0.1):
         print('Mean accuracy:', sum(number_list) / len(number_list))
 
 
-data = extract_reviews(r'.\sorted_data\books\all.review')
-print('Finished decoding and review extraction!')
-data = data[:10000]
-uni_vs_bigram(data)
-
+data = textio.read_processed_data_from_file('books')
+labeled_reviews = [([Word(word) for word in review],
+                    'outer' if label == '1.0' or label == '5.0' else 'inner')
+                   for review, label in data]
+adverbs = nltk.FreqDist(
+    [word1
+     for review in labeled_reviews
+     for word1, word2 in nltk.bigrams(review[0])
+     if word1.pos in {'RB', 'RBR', 'RBS'}
+     and word2.pos in {'JJ', 'JJR', 'JJS', 'VBG', 'VBN'}]
+)
+features = {adverb for adverb, freq in adverbs.items() if freq >= 5}
+processed_reviews = [(extract_features(review, features), label)
+                     for review, label in labeled_reviews]
+classifier = nltk.NaiveBayesClassifier.train(processed_reviews)
+print(cl.accuracy(classifier, processed_reviews))
