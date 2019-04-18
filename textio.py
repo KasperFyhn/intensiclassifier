@@ -99,6 +99,28 @@ def read_processed_data_from_file(file):
     return labeled_texts
 
 
+def read_run_info_from_file(file):
+    """Return a list of dicts with training and test accuracy and 2000 most
+    informative features from an earlier run."""
+
+    with open(file) as f:
+        raw = f.read()
+
+    lines = raw.split('\n')
+    runs = []
+    for line in lines:
+        if line == '':
+            continue
+        comma_splits = line.split(',')
+        train_acc = float(comma_splits[0].strip())
+        test_acc = float(comma_splits[1].strip())
+        feature_set = set(w for w in comma_splits[2].split() if not w == '')
+        runs.append(
+            {'fts': feature_set, 'train_acc': train_acc, 'test_acc': test_acc}
+        )
+    return runs
+
+
 def processed_stars(test=False,
                     categories=('books', 'dvd', 'electronics', 'kitchen')):
     """Extracts all features from the given categories in 'processed stars' and
