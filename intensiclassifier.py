@@ -92,7 +92,7 @@ class AdjDist(nltk.ConditionalFreqDist):
                                            correction=correction,
                                            sd_cutoff=sd_cutoff,
                                            test_parameters=test_parameters)
-            clusters[kind].add(cond)
+            clusters[kind].add((cond, len(self._observations(cond))))
 
         return clusters
 
@@ -186,8 +186,7 @@ class AdjDist(nltk.ConditionalFreqDist):
         observations = self._observations(condition)
         mean = self.mean(condition)
         n = len(observations)
-        if n == 1:
-            print('Only one observation for', condition, '- returning 0.')
+        if n == 1:  # if there is only one observation, return 0
             return 0
         return math.sqrt((sum((x - mean) ** 2 for x in observations)) / (n - 1))
 
@@ -213,13 +212,14 @@ def clusters_across_adjs(adjdists: dict, sd_cutoff=0.1, comparison='Ø',
     AdjDists"""
 
     return nltk.ConditionalFreqDist(
-        (mod_type, modifier)
+        (mod_type, obs)
         for dist in adjdists.values()
         for mod_type, modifiers in dist.cluster_conditions(
             sd_cutoff=sd_cutoff, comparison=comparison,
             test_parameters=test_parameters
         ).items()
-        for modifier in modifiers if not modifier == 'Ø'
+        for modifier, count in modifiers if not modifier == 'Ø'
+        for obs in [modifier] * count
     )
 
 
@@ -246,7 +246,7 @@ def frequent_adjectives(data, n_adjs=None, threshold=5):
     if n_adjs and n_adjs > len(adjs):
         n_adjs = None
 
-    return [adj for adj, freq in adjs.most_common(n_adjs) if freq >= threshold]
+    return {adj for adj, freq in adjs.most_common(n_adjs) if freq >= threshold}
 
 
 def extract_features(review: list, features: set, bigrams=False):
@@ -271,41 +271,31 @@ def extract_multinomial_features(review: list, features: set):
     """Create a sparse dict of boolean values based on the given feature set for
     the given review."""
 
-    test_list = [word for word in review] # make a copy of the review tokens
-    review_bigrams = nltk.bigrams(test_list)
-    test_list += [(True, bigram[1]) for bigram in review_bigrams
-                  if (bigram[0] in {'very', 'much', 'so'}
-                      or bigram[0][-2:] == 'ly')
-                  and bigram[1] in features]
-
-    review_features = {word: 2 if (True, word) in test_list
-                       else 1 if word in test_list
+    review_bigrams = nltk.bigrams(review)
+    relevant = [bigram for bigram in review_bigrams if bigram[1] in features]
+    test_list = [('ampl', bigram[1]) if bigram[0] in ampl
+                 else ('down', bigram[1]) if bigram[0] in down
+                 else ('RAW', bigram[1])
+                 for bigram in relevant]
+    review_features = {word: 3 if ('ampl', word) in test_list
+                       else 2 if ('down', word) in test_list
+                       else 1 if ('RAW', word) in test_list
                        else 0
                        for word in features}
-
     return review_features
 
 
-data = load_data('processed_data/books')
-adjs = frequent_adjectives(data, n_adjs=100)
-dists = {adj: AdjDist(adj, data) for adj in adjs}
-cfd = clusters_across_adjs(dists)
+data = load_data('processed_data/imdb_movies')
 
-"""
-inf_fts = []
-with open('informative_features') as f:
-    raw = f.read()
-    inf_fts = raw.split()
-
-adj_dists = {adj: AdjDist(adj, data) for adj in inf_fts}
-clusters = clusters_across_data(adj_dists)
-
+data_cut = int(0.1 * len(data))
 
 classifiers = []
-for i in range(10):
-    print('Run number', i)
+
+for i in range(5):
+    print('Run number', i + 1)
     random.shuffle(data)
-    test, training = data[:1000], data[1000:]
+    test, training = data[:data_cut], data[data_cut:]
+    print('\tExtracting features from training set ...')
     feature_set = frequent_adjectives(training)
     training = [(extract_features(review, feature_set), label)
                 for review, label in training]
@@ -319,6 +309,42 @@ for i in range(10):
     classifiers.append(
         {'clf': classifier, 'train_acc': training_acc,
          'test_acc': test_acc}
-    )
+        )
     print(classifiers[-1])
-"""
+
+
+def process(adj, data, i, n):
+    print('\r', i + 1, 'of', n, end='', flush=True)
+    return AdjDist(adj, data)
+
+for i in range(5):
+    print('Run number', i + 1)
+    random.shuffle(data)
+    test, training = data[:data_cut], data[data_cut:]
+    print('\tExtracting and measuring distributions of adjectives ...')
+    feature_set = frequent_adjectives(training)
+    n = len(feature_set)
+    dists = {adj: process(adj, training, i, n)
+             for i, adj in enumerate(feature_set)}
+    clusters = clusters_across_adjs(dists, test_parameters={'mean'},
+                                    sd_cutoff=0)   
+    down = {mod for mod, freq in clusters['down'].items()
+            if not freq == 1 and freq > clusters['ampl'][mod]}
+    ampl = {mod for mod, freq in clusters['ampl'].items()
+            if not freq == 1 and freq > clusters['down'][mod]}
+    print('\tExtracting features from training set ...')
+    training = [(extract_multinomial_features(review, feature_set), label)
+                for review, label in training]
+    print('\tTraining ...')
+    classifier = nltk.NaiveBayesClassifier.train(training)
+    print('\tTesting ...')
+    training_acc = nltk.classify.accuracy(classifier, training)
+    test = [(extract_multinomial_features(review, feature_set), label)
+            for review, label in test]
+    test_acc = nltk.classify.accuracy(classifier, test)
+    classifiers.append(
+        {'clf': classifier, 'train_acc': training_acc,
+         'test_acc': test_acc}
+        )
+    print(classifiers[-1])
+
