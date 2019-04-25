@@ -84,7 +84,7 @@ def read_processed_data_from_file(file):
     """Read in labeled POS-tagged data from a file. Each line must be in the
     format 'word1\TAG word2\TAG ... wordN\TAG #LABEL#'."""
 
-    with open(file) as f:
+    with open(file, encoding='latin1') as f:
         raw = f.read()
 
     lines = raw.split('\n')

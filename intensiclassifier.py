@@ -1,5 +1,4 @@
 import nltk
-from nltk.corpus import movie_reviews
 import math
 import textio
 from collections import defaultdict
@@ -24,8 +23,8 @@ class Word(str):
 
 class AdjDist(nltk.ConditionalFreqDist):
 
-    def __init__(self, word, data_set):
-        defaultdict.__init__(self, nltk.FreqDist)
+    @classmethod
+    def from_data(cls, word, data_set):
 
         bigrams = [(bigram, float(label))
                    for review, label in data_set
@@ -35,9 +34,37 @@ class AdjDist(nltk.ConditionalFreqDist):
                          else 'Ø', label)
                         for bigram, label in bigrams]
         cond_samples += [('#ALL#', label) for bigram, label in bigrams]
-        if cond_samples:
-            for (cond, sample) in cond_samples:
-                self[cond][sample] += 1
+
+        return cls(cond_samples)
+
+    def copy(self, conds_higher_than=0):
+        """Make a copy of the AdjDist. The kw arg conds_higher_than provides an
+        option to sort out conditions with observations lower than a given
+        threshold."""
+
+        cond_samples = [(cond, obs)
+                        for cond, dist in self.items()
+                        for label, count in dist.items()
+                        for obs in [label] * count
+                        if count > conds_higher_than]
+        return type(self)(cond_samples)
+
+    def clustered_distribution(self, sd_cutoff=0.1, comparison='Ø',
+                               test_parameters=('mean', 'median', 'mode')):
+        """Return a new AdjDist where modifiers are collapsed in clusters based
+        on the cluster_conditions() method."""
+
+        clusters = self.cluster_conditions(sd_cutoff=sd_cutoff,
+                                           comparison=comparison,
+                                           test_parameters=test_parameters)
+        new_cond_samples = [(cluster, obs)
+                            for cluster, conds in clusters.items()
+                            for cond, count in conds
+                            for obs in self._observations(cond)]
+        new = type(self)(new_cond_samples)
+        new['Ø'] = self['Ø']
+        new['#ALL#'] = self['#ALL#']
+        return new
 
     def cluster_conditions(self, sd_cutoff=0.1, comparison='Ø',
                            test_parameters=('mean', 'median', 'mode')):
@@ -56,6 +83,7 @@ class AdjDist(nltk.ConditionalFreqDist):
         if 'not' in self.conditions():
             p = self.compare_conditions('not', comparison, sd_cutoff=sd_cutoff)
             # if negation gives higher scores than non-negated, word is negative
+            # in which case a negative correction is used for measures onwards
             if p == 'ampl':
                 correction = -1
                 done = True
@@ -77,7 +105,7 @@ class AdjDist(nltk.ConditionalFreqDist):
                     pos += 1
                 elif value < mean_of_samples:
                     neg += 1
-            # if negative word, add a minus factor for measures onwards
+            # if negative word, use a minus factor for measures onwards
             if pos < neg:
                 correction = -1
             else:
@@ -285,66 +313,6 @@ def extract_multinomial_features(review: list, features: set):
     return review_features
 
 
-data = load_data('processed_data/imdb_movies')
-
-data_cut = int(0.1 * len(data))
-
-classifiers = []
-
-for i in range(5):
-    print('Run number', i + 1)
-    random.shuffle(data)
-    test, training = data[:data_cut], data[data_cut:]
-    print('\tExtracting features from training set ...')
-    feature_set = frequent_adjectives(training)
-    training = [(extract_features(review, feature_set), label)
-                for review, label in training]
-    print('\tTraining ...')
-    classifier = nltk.NaiveBayesClassifier.train(training)
-    print('\tTesting ...')
-    training_acc = nltk.classify.accuracy(classifier, training)
-    test = [(extract_features(review, feature_set), label)
-            for review, label in test]
-    test_acc = nltk.classify.accuracy(classifier, test)
-    classifiers.append(
-        {'clf': classifier, 'train_acc': training_acc,
-         'test_acc': test_acc}
-        )
-    print(classifiers[-1])
-
-
-def process(adj, data, i, n):
-    print('\r', i + 1, 'of', n, end='', flush=True)
-    return AdjDist(adj, data)
-
-for i in range(5):
-    print('Run number', i + 1)
-    random.shuffle(data)
-    test, training = data[:data_cut], data[data_cut:]
-    print('\tExtracting and measuring distributions of adjectives ...')
-    feature_set = frequent_adjectives(training)
-    n = len(feature_set)
-    dists = {adj: process(adj, training, i, n)
-             for i, adj in enumerate(feature_set)}
-    clusters = clusters_across_adjs(dists, test_parameters={'mean'},
-                                    sd_cutoff=0)   
-    down = {mod for mod, freq in clusters['down'].items()
-            if not freq == 1 and freq > clusters['ampl'][mod]}
-    ampl = {mod for mod, freq in clusters['ampl'].items()
-            if not freq == 1 and freq > clusters['down'][mod]}
-    print('\tExtracting features from training set ...')
-    training = [(extract_multinomial_features(review, feature_set), label)
-                for review, label in training]
-    print('\tTraining ...')
-    classifier = nltk.NaiveBayesClassifier.train(training)
-    print('\tTesting ...')
-    training_acc = nltk.classify.accuracy(classifier, training)
-    test = [(extract_multinomial_features(review, feature_set), label)
-            for review, label in test]
-    test_acc = nltk.classify.accuracy(classifier, test)
-    classifiers.append(
-        {'clf': classifier, 'train_acc': training_acc,
-         'test_acc': test_acc}
-        )
-    print(classifiers[-1])
-
+data = load_data('processed_data/books')
+boring = AdjDist.from_data('boring', data)
+test = boring.clustered_distribution(test_parameters=['mean'])
