@@ -49,6 +49,17 @@ class AdjDist(nltk.ConditionalFreqDist):
                         if count > conds_higher_than]
         return type(self)(cond_samples)
 
+    def relative_frequencies(self):
+
+
+        copy = self.copy()
+        for cond, dist in copy.items():
+            for key in dist:
+                dist[key] = dist[key] / len(self._observations(cond))
+        return copy
+
+
+
     def clustered_distribution(self, sd_cutoff=0.1, comparison='Ø',
                                test_parameters=('mean', 'median', 'mode')):
         """Return a new AdjDist where modifiers are collapsed in clusters based
@@ -82,7 +93,7 @@ class AdjDist(nltk.ConditionalFreqDist):
         done = False
         if 'not' in self.conditions():
             p = self.compare_conditions('not', comparison, sd_cutoff=sd_cutoff)
-            # if negation gives higher scores than non-negated, word is negative
+            # if negation gives higher score than non-negated, word is negative
             # in which case a negative correction is used for measures onwards
             if p == 'ampl':
                 correction = -1
@@ -111,7 +122,7 @@ class AdjDist(nltk.ConditionalFreqDist):
             else:
                 correction = 1
 
-        # all conditions of actual modifiers, i.e. excl the ALL and Ø categories
+        # conditions of actual modifiers, i.e. excl the ALL and Ø categories
         mod_conditions = set(self.conditions()).difference({'#ALL#', 'Ø'})
 
         # run through each condition and test how it behaves compared to raw
@@ -124,7 +135,8 @@ class AdjDist(nltk.ConditionalFreqDist):
 
         return clusters
 
-    def compare_conditions(self, test_condition: str, comparison_condition: str,
+    def compare_conditions(self, test_condition: str,
+                           comparison_condition: str,
                            correction=1, sd_cutoff=0.1,
                            test_parameters=('mean', 'median', 'mode')):
         """Compare two conditions (i.e. modifiers) based on the given test
@@ -216,7 +228,7 @@ class AdjDist(nltk.ConditionalFreqDist):
         n = len(observations)
         if n == 1:  # if there is only one observation, return 0
             return 0
-        return math.sqrt((sum((x - mean) ** 2 for x in observations)) / (n - 1))
+        return math.sqrt((sum((x - mean)**2 for x in observations)) / (n - 1))
 
     def _observations(self, condition):
         """Return a sorted list of observations for the passed condition."""
@@ -236,8 +248,8 @@ class AdjDist(nltk.ConditionalFreqDist):
 
 def clusters_across_adjs(adjdists: dict, sd_cutoff=0.1, comparison='Ø',
                          test_parameters=('mean', 'median', 'mode')):
-    """Return a ConditionalFreqDist of clustering of modifiers across a range of
-    AdjDists"""
+    """Return a ConditionalFreqDist of clustering of modifiers across a range
+    of AdjDists"""
 
     return nltk.ConditionalFreqDist(
         (mod_type, obs)
@@ -249,6 +261,17 @@ def clusters_across_adjs(adjdists: dict, sd_cutoff=0.1, comparison='Ø',
         for modifier, count in modifiers if not modifier == 'Ø'
         for obs in [modifier] * count
     )
+
+
+def make_adj_dists(adjs, data):
+
+    n = len(adjs)
+    dists = {}
+    for i, adj in enumerate(adjs):
+        print(f'\rMaking AdjDist {i+1} of {n}', end='')
+        dists[adj] = AdjDist.from_data(adj, data)
+    print()
+    return dists
 
 
 def load_data(file):
@@ -278,8 +301,8 @@ def frequent_adjectives(data, n_adjs=None, threshold=5):
 
 
 def extract_features(review: list, features: set, bigrams=False):
-    """Create a sparse dict of boolean values based on the given feature set for
-    the given review."""
+    """Create a sparse dict of boolean values based on the given feature set
+    for the given review."""
 
     test_list = [word for word in review]
 
@@ -295,9 +318,9 @@ def extract_features(review: list, features: set, bigrams=False):
     return review_features
 
 
-def extract_multinomial_features(review: list, features: set):
-    """Create a sparse dict of boolean values based on the given feature set for
-    the given review."""
+def extract_multinomial_features(review, features: set, ampl: set, down: set):
+    """Create a sparse dict of boolean values based on the given feature set
+    for the given review."""
 
     review_bigrams = nltk.bigrams(review)
     relevant = [bigram for bigram in review_bigrams if bigram[1] in features]
@@ -313,6 +336,6 @@ def extract_multinomial_features(review: list, features: set):
     return review_features
 
 
-data = load_data('processed_data/books')
+data = load_data('processed_data/imdb_movies')
 boring = AdjDist.from_data('boring', data)
-test = boring.clustered_distribution(test_parameters=['mean'])
+test = boring.clustered_distribution(sd_cutoff=0.01)

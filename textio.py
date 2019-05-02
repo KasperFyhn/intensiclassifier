@@ -4,8 +4,9 @@ import re
 from typing import List, Tuple
 
 
-def output_tagged_sents(tokens: List[Tuple[str, str]], out=sys.stdout, end=' '):
-    """Print the tagged sentence(s), given as a list of tuples, to the out file.
+def output_tagged_sents(tokens: List[Tuple[str, str]], out=sys.stdout,
+                        end=' '):
+    """Print the tagged sentences, given as a list of tuples, to the out file.
     Each word will be printed in the format 'word\\TAG'."""
 
     # make a list of correctly formatted string
@@ -20,8 +21,8 @@ def output_tagged_sents(tokens: List[Tuple[str, str]], out=sys.stdout, end=' '):
 
 def write_processed_data_to_file(labeled_texts: List[Tuple[list, str]], file):
     """Write POS-tagged text to a file for later retrieval. Each text in the
-    list will be stripped from line shifts as each text will be separated so and
-    have the format 'word1\TAG word2\TAG ... wordN\TAG #LABEL#'."""
+    list will be stripped from line shifts as each text will be separated so
+    and have the format 'word1\TAG word2\TAG ... wordN\TAG #LABEL#'."""
 
     try:
         for text, label in labeled_texts:
@@ -33,9 +34,9 @@ def write_processed_data_to_file(labeled_texts: List[Tuple[list, str]], file):
         return False
 
 
-def extract_reviews(review_file):
-    """Extract reviews from a structured XML file returned as list(review, tag).
-    """
+def extract_amazon_reviews(review_file):
+    """Extract reviews from a structured XML file returned as
+    list(review, tag)."""
 
     print(f'Decoding {review_file} ...')
     with open(review_file, encoding='ISO-8859-1') as f:
@@ -55,19 +56,65 @@ def extract_reviews(review_file):
     return reviews
 
 
+def extract_imdb_reviews(review_file):
+    """Extract reviews from a structured file returned as list(review, tag)."""
+
+    print(f'Decoding {review_file} ...')
+    with open(review_file, encoding='utf-8') as f:
+        raw = f.read()
+
+    print('Extracting review text and labels ...')
+    trash = {'<sssss>', '-rrb-', '-lrb-'}
+    lines = raw.split('\n')[:-1]
+    reviews = []
+    for line in lines:
+        chunks = line.split('\t\t')
+        label = chunks[2]
+        review = ' '.join(w for w in chunks[3].split() if w not in trash)
+        reviews.append((review, label))
+
+    return reviews
+
+
+def _process_review(review, i, n):
+    """A private function to process a review and POS-tag it while keeping
+    count of how long it is in the process."""
+
+    print(f'\rProcessing {i + 1} of {n} reviews', end='')
+    return nltk.pos_tag(nltk.word_tokenize(review[0].strip())), review[1]
+
+
 def process_reviews(reviews: list):
     """Return a list of the passed reviews with each review being tokenized and
     POS-tagged."""
 
-    return [(nltk.pos_tag(nltk.word_tokenize(review.strip())), label)
-            for review, label in reviews]
+    n = len(reviews)
+    processed = [_process_review(review, i, n)
+                 for i, review in enumerate(reviews)]
+    return processed
 
 
 def make_balanced_dataset(data: list, size=10000):
     """Return a processed and balanced from the passed list of data"""
 
+    # find out how many categories in the data and determine category size
     categories = {label: 0 for review, label in data}
-    cat_size = 10000 / len(categories)
+    for review, label in data:
+        categories[label] += 1
+
+    # determine category size. If balance not possible, set to highest possible
+    cat_size = size / len(categories)
+    min_val = min(categories.values())
+    if cat_size > min_val:
+        cat_size = min_val
+        size = min_val * len(categories)
+        print('There are categories with too few reviews to make an even ' +
+              'dataset of the requested size. Each category will contain ' +
+              f'{min_val} reviews, giving a total of {size} reviews.')
+
+    # reset category counter for the iteration
+    categories = {cat: 0 for cat in categories}
+    # iterate over the data and pick reviews until there are enough of all cats
     balanced_list = []
     reviews = iter(data)
     while len(balanced_list) < size:
@@ -80,22 +127,24 @@ def make_balanced_dataset(data: list, size=10000):
     return process_reviews(balanced_list)
 
 
-def read_processed_data_from_file(file):
+def read_processed_data_from_file(file, encoding='latin1'):
     """Read in labeled POS-tagged data from a file. Each line must be in the
     format 'word1\TAG word2\TAG ... wordN\TAG #LABEL#'."""
 
-    with open(file, encoding='latin1') as f:
+    with open(file, encoding=encoding) as f:
         raw = f.read()
 
     lines = raw.split('\n')
     labeled_texts = []
-    for line in lines:
+    n = len(lines)
+    for i, line in enumerate(lines):
+        print(f'\rLoading review {i + 1} of {n}', end='')
         if line == '':
             continue
         tagged_words = re.findall(r'(.+?\\.+?) ', line)
-        label = re.findall(r'#(\d.\d)#', line)[0]
+        label = re.findall(r'#(\d+.\d)#', line)[0]
         labeled_texts.append((tagged_words, label))
-
+    print()
     return labeled_texts
 
 
