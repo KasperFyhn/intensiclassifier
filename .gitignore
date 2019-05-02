@@ -1,3 +1,7 @@
+# large data files
+processed_data/100kbooks
+imdb_data
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
