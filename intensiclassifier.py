@@ -134,6 +134,8 @@ class AdjDist(nltk.ConditionalFreqDist):
             samples = self._possible_outcomes()
             mean_of_samples = sum(samples) / len(samples)
             pos, neg = 0, 0
+            if comparison == 'Ø' and 'Ø' not in self.conditions():
+                comparison = '#ALL#'
             comparison_scores = {'mean': self.mean(comparison),
                                  'median': self.median(comparison),
                                  'mode': self.mode_value(comparison)}
@@ -185,13 +187,19 @@ class AdjDist(nltk.ConditionalFreqDist):
             print(comparison_condition, 'not present as a modifier')
             return
 
+        # compare over all if raw is not known
+        if comparison_condition == 'Ø' and 'Ø' not in self.conditions():
+            comparison_condition = '#ALL#'
+
         # prepare comparison and test values
         test = {'mean': self.mean(test_condition),
                 'median': self.median(test_condition),
-                'mode': self.mode_value(test_condition)}
+                'mode': self.mode_value(test_condition),
+                'score': self.overall_score(test_condition)}
         comparison = {'mean': self.mean(comparison_condition),
                       'median': self.median(comparison_condition),
-                      'mode': self.mode_value(comparison_condition)}
+                      'mode': self.mode_value(comparison_condition),
+                      'score': self.overall_score(comparison_condition)}
 
         results = {'DOWN': 0, 'AMPL': 0, 'UNDEC': 0}
 
@@ -220,6 +228,13 @@ class AdjDist(nltk.ConditionalFreqDist):
         # if there is not only one, it is undecided
         else:
             return 'UNDEC'
+
+    def overall_score(self, condition):
+
+        mean = self.mean(condition)
+        median = self.median(condition)
+        mode = self.mode_value(condition)
+        return (mean + median + mode) / 3
 
     def mean(self, condition):
         """Return the mean value for the passed condition."""
@@ -470,58 +485,71 @@ def accuracy(clf, test):
 
 
 # load data, make folds and prepare soon-to-be dataframes
-data = load_data(r"processed_data\books")
+data = load_data(r"processed_data\imdb_movies")
 random.shuffle(data)
 n_folds = 10
-results = defaultdict(list)
-predictions = defaultdict(list)
+results = defaultdict(list)  # raw accuracy
+predictions = defaultdict(list)  # predictions and correct for conf matrices
+measure_mutual_information = False
 
+# prepared parameter values etc. for the different types of classifiers
 CLASSIFIERS = [
         ['Bernoulli', True, False, train_bernoulliNB],
         ['Multinomial', False, False, train_multinomialNB],
-        ['Binarized multinomial', True, False, train_multinomialNB],
+        ['Binarized Multinomial', True, False, train_multinomialNB],
         ['Colored Bernoulli', True, True, train_bernoulliNB],
         ['Colored Multinomial', False, True, train_multinomialNB],
-        ['Colored Binarized multinomial', True, True, train_multinomialNB],
+        ['Colored Binarized Multinomial', True, True, train_multinomialNB],
         ]
 
-for i in range(1):
+for i in range(n_folds):
     print('\n### RUN NUMBER', i + 1, '###')
     training, test = get_fold(i, data, n_folds=n_folds)
 
     # append correct test labels to predictions dict
     predictions['correct'] += [label for review, label in test]
 
-    print('Getting adjectives and measuring occurrence ...')
-    adjectives = frequent_adjectives(training, threshold=10)
-    adj_occurrence = [(extract_features(review, adjectives, binarized=True),
-                       label)
-                      for review, label in training]
+    if measure_mutual_information:
+        print('Getting adjectives and measuring occurrence ...')
+        adjectives = frequent_adjectives(training, threshold=10)
+        # note adj occurences for each class to calculate mutual information
+        adj_occurrence = [(extract_features(review, adjectives,
+                                            binarized=True), label)
+                          for review, label in training]
 
-    print('Calculating mutual information to decide features ...')
-    mutual_info_for_adjs = mutual_information(adj_occurrence, adjectives)
-    fold_features = {feature
-                     for feature, mut_info in sorted(
-                             mutual_info_for_adjs.items(), key=lambda x: x[1]
-                             )[:1000]
-                     }
+        print('Calculating mutual information to decide features ...')
+        mutual_info_for_adjs = mutual_information(adj_occurrence, adjectives)
+        # make a feature set for this fold of the ones with highest mutual info
+        fold_features = [feature
+                         for feature, mut_info in sorted(
+                                 mutual_info_for_adjs.items(),
+                                 key=lambda x: x[1]
+                                 )
+                         if not mut_info == 0.0
+                         ]
+    else:
+        fold_features = frequent_adjectives(training, threshold=10)
 
     print('Making AdjDists to determine modifiers ...')
     adj_dists = make_adj_dists(fold_features, training)
 
     print('Making modifier dicts for all features based on their clusters ...')
+    # prepare a 2d dict with modifiers that are seen with the specific adjs
+    # in order to retrieve their types
     ADJ_MODIFIERS = {}
     for adj in fold_features:
         mod_clusters = adj_dists[adj].cluster_conditions(
-                comparison='Ø', sd_cutoff=0.1
+                comparison='Ø', test_parameters={'score'}, sd_cutoff=0.1
                 )
         ADJ_MODIFIERS[adj] = {mod[0]: kind
                               for kind in mod_clusters
                               for mod in mod_clusters[kind]}
 
     print('Making modifier dicts for clusters across adjectives ...')
-    clusters = clusters_across_adjs(adj_dists, comparison='#ALL#',
-                                    test_parameters={'mean'}, sd_cutoff=0)
+    # prepare a dict of all seen modifiers and their types for when they have
+    # not been seen before with a certain adjective
+    clusters = clusters_across_adjs(adj_dists, comparison='Ø',
+                                    test_parameters={'score'}, sd_cutoff=0.1)
     ALL_MODIFIERS = {}
     modifiers = set.union(*[set(mods.keys()) for mods in clusters.values()])
     for mod in modifiers:
@@ -532,16 +560,22 @@ for i in range(1):
     # train and test each classifier and report results
     for classifier, binary, colored, train_clf in CLASSIFIERS:
         print(classifier, end=': ')
+
+        # determine the classifier's final feature set depending on type
         if colored:
             features = {kind + feature for kind in {'', 'NEG', 'AMPL', 'DOWN'}
                         for feature in fold_features}
         else:
             features = fold_features
+
+        # process data and train
         processed_data = [(extract_features(review, features, binarized=binary,
                                             colored_bigrams=colored), label)
                           for review, label in data]
         training, test = get_fold(i, processed_data, n_folds=n_folds)
         clf = train_clf(training)
+
+        # test and save results
         acc = accuracy(clf, test)
         results[classifier].append(acc)
         predictions[classifier] += list(clf.predict([r for r, l in test]))
