@@ -132,9 +132,9 @@ def read_processed_data_from_file(file, encoding='latin1'):
 
     lines = raw.split('\n')
     labeled_texts = []
-    n = len(lines)
+    n = len(lines) - 1
     for i, line in enumerate(lines):
-        print(f'\rLoading review {i + 1} of {n}', end='')
+        print(f'\rLoading review {i} of {n}', end='')
         if line == '':
             continue
         tagged_words = re.findall(r'(.+?\\.+?) ', line)

@@ -2,7 +2,11 @@ import nltk
 import math
 import dataio
 import string
-
+from sklearn import naive_bayes as nb, feature_selection, metrics
+import pandas as pd
+from collections import defaultdict
+import random
+import matplotlib.pyplot as plt
 
 class Word(str):
     """A string representation in which the passed POS tag can be retrieved
@@ -96,14 +100,14 @@ class AdjDist(nltk.ConditionalFreqDist):
 
     def cluster_conditions(self, sd_cutoff=0.1, comparison='Ø',
                            test_parameters=('mean', 'median', 'mode')):
-        """Return a dict with keys 'down', 'ampl' and 'undec' with their values
+        """Return a dict with keys 'DOWN', 'AMPL' and 'UNDEC' with their values
         being sets containing the modifiers behaving as such.
         sd_cutoff is a factor multiplied with the standard deviation to give a
         a minimum value that the mean, median and mode values must diverge from
         the comparison condition."""
 
         # prepare the dict to be returned in the end
-        clusters = {'down': set(), 'ampl': set(), 'undec': set(), 'neg': set()}
+        clusters = {'DOWN': set(), 'AMPL': set(), 'UNDEC': set(), 'NEG': set()}
 
         # see if it is generally a positive or negative word
         # polarity can tell us a lot about the meaning of a word
@@ -115,12 +119,12 @@ class AdjDist(nltk.ConditionalFreqDist):
             p = self.compare_conditions(neg, comparison, sd_cutoff=sd_cutoff)
             # if negation gives higher score than non-negated, word is negative
             # in which case a negative correction is used for measures onwards
-            if p == 'ampl':
+            if p == 'AMPL':
                 correction = -1
                 done = True
                 break
             # if lower score, word is positive
-            elif p == 'down':
+            elif p == 'DOWN':
                 correction = 1
                 done = True
                 break
@@ -150,9 +154,7 @@ class AdjDist(nltk.ConditionalFreqDist):
                 {'#ALL#', 'Ø'}.union(negations)
                  )
         for neg in negations:
-            clusters['neg'].add(
-                    (neg, len(self.observations(neg)))
-                    )
+            clusters['NEG'].add((neg, len(self.observations(neg))))
 
         # run through each condition and test how it behaves compared to raw
         for cond in mod_conditions:
@@ -171,10 +173,10 @@ class AdjDist(nltk.ConditionalFreqDist):
                            correction=1, sd_cutoff=0.1,
                            test_parameters=('mean', 'median', 'mode')):
         """Compare two conditions (i.e. modifiers) based on the given test
-        parameters. If test_condition scores higher than the comparison, 'ampl'
-        is returned; if lower, 'down' is returned; if unclear, 'undec' is
+        parameters. If test_condition scores higher than the comparison, 'AMPL'
+        is returned; if lower, 'DOWN' is returned; if unclear, 'UNDEC' is
         returned. If correction is set to -1, a lower score is higher, i.e.
-        the test is an 'ampl' if it scores lower than the comparison."""
+        the test is an 'AMPL' if it scores lower than the comparison."""
 
         if test_condition not in self.conditions():
             print(test_condition, 'not present as a modifier')
@@ -191,7 +193,7 @@ class AdjDist(nltk.ConditionalFreqDist):
                       'median': self.median(comparison_condition),
                       'mode': self.mode_value(comparison_condition)}
 
-        results = {'down': 0, 'ampl': 0, 'undec': 0}
+        results = {'DOWN': 0, 'AMPL': 0, 'UNDEC': 0}
 
         # test for each measure
         for measure in test_parameters:
@@ -199,13 +201,13 @@ class AdjDist(nltk.ConditionalFreqDist):
             c = comparison[measure] * correction
             # if the difference is below the stand dev threshold
             if abs(t - c) < sd_cutoff * self.sd(comparison_condition):
-                results['undec'] += 1
+                results['UNDEC'] += 1
             # if the condition is an amplifier
             elif t > c:
-                results['ampl'] += 1
+                results['AMPL'] += 1
             # if the condition is a downgrader
             elif t < c:
-                results['down'] += 1
+                results['DOWN'] += 1
 
         max_r = max(results.values())
         winners = []
@@ -217,7 +219,7 @@ class AdjDist(nltk.ConditionalFreqDist):
             return winners[0]
         # if there is not only one, it is undecided
         else:
-            return 'undec'
+            return 'UNDEC'
 
     def mean(self, condition):
         """Return the mean value for the passed condition."""
@@ -344,7 +346,7 @@ def resolve_sentence_polarities(data):
     return resolved_data
 
 
-def frequent_adjectives(data, n_adjs=None, threshold=5):
+def frequent_adjectives(data, n=None, threshold=5):
     """Return a set of N adjectives (and adjectival verbs) that are the most
     frequent across the data and more frequent than the given threshold. If
     n_adjs is None, all adjs above the threshold will be returned."""
@@ -355,7 +357,192 @@ def frequent_adjectives(data, n_adjs=None, threshold=5):
         if word.pos in {'JJ', 'JJR', 'JJS'}
     )
     # make sure that the number of adjectives do not exceed the possible
-    if n_adjs and n_adjs > len(adjs):
-        n_adjs = None
+    if n and n > len(adjs):
+        n = None
+    # return the n most common adjs above the threshold
+    return {adj for adj, freq in adjs.most_common(n) if freq >= threshold}
 
-    return {adj for adj, freq in adjs.most_common(n_adjs) if freq >= threshold}
+
+def extract_features(review: list, features: set, binarized=False,
+                     colored_bigrams=False):
+    """Create a sparse vector of counts based on the given feature set for the
+    given review. If 'binarized' is set, the count stops at 1 and thus also
+    works as boolean."""
+
+    if colored_bigrams:
+        fdist = nltk.FreqDist()
+        # make bigrams, but keep only relevant ones - i.e. with adjectives
+        relevant_bigrams = [bigram for bigram in nltk.bigrams(review)
+                            if bigram[1].pos in {'JJ', 'JJR', 'JJS'}]
+        # run over bigrams to check how/if they are modified
+        for bigram in relevant_bigrams:
+            mod, adj = bigram
+            # look only at adjectives that are actually features
+            if adj in features:
+                # test for modifier only if it's an adverb
+                if mod.pos in {'RB', 'RBR', 'RBS'}:
+                    # if the modifier has been seen with the adjective before
+                    if mod in ADJ_MODIFIERS[adj]:
+                        kind = ADJ_MODIFIERS[adj][mod]
+                    # if it has been seen with other adjectives
+                    elif mod in ALL_MODIFIERS:
+                        kind = ALL_MODIFIERS[mod]
+                    # probably something unique, set as raw
+                    else:
+                        kind = ''
+                    # we don't want UNDEC as a feature on its own, set as raw
+                    # but if it was UNDEC as seen with the adjective, we want
+                    # to know. Therefore, the label must be kept
+                    if kind == 'UNDEC':
+                        kind = ''
+                # if not preceded as modifier, count as raw
+                else:
+                    kind = ''
+                # increment the count of the colored adj
+                fdist[kind+adj] += 1
+            else:
+                continue
+    else:
+        fdist = nltk.FreqDist(word for word in review)
+
+    if binarized:
+        return [1 if fdist[feature] > 0 else 0 for feature in features]
+    else:
+        return [fdist[feature] for feature in features]
+
+
+def split_labeled_reviews(labeled_reviews):
+    """Split a list of labeled reviews list(tuple(review, label)) into two
+    lists and return as reviews and labels."""
+
+    reviews = []
+    labels = []
+    for review, label in labeled_reviews:
+        reviews.append(review)
+        labels.append(label)
+
+    return reviews, labels
+
+
+def get_fold(i, data, n_folds=10):
+    """Get fold i of n folds."""
+
+    n = len(data)
+    fold_size = n // n_folds
+    bottom = i * fold_size
+    top = bottom + fold_size
+    training = data[0:bottom] + data[top:]
+    test = data[bottom:top]
+    return training, test
+
+
+def train_bernoulliNB(training):
+    """Return a trained Bernoulli Naive Bayes classifier."""
+
+    clf = nb.BernoulliNB()
+    reviews, labels = split_labeled_reviews(training)
+    clf.fit(reviews, labels)
+    return clf
+
+
+def train_multinomialNB(training):
+    """Return a trained Bernoulli Naive Bayes classifier."""
+
+    clf = nb.MultinomialNB()
+    reviews, labels = split_labeled_reviews(training)
+    clf.fit(reviews, labels)
+    return clf
+
+
+def mutual_information(training, features):
+    """Return a dict of features and their mutual information score."""
+
+    reviews, labels = split_labeled_reviews(training)
+    mutual_info = feature_selection.mutual_info_classif(reviews, labels)
+    return {feature: score for feature, score in zip(features, mutual_info)}
+
+
+def accuracy(clf, test):
+    """Return the accuracy of the classifier on the test set."""
+
+    reviews, labels = split_labeled_reviews(training)
+    return clf.score(reviews, labels)
+
+
+# load data, make folds and prepare soon-to-be dataframes
+data = load_data(r"processed_data\books")
+random.shuffle(data)
+n_folds = 10
+results = defaultdict(list)
+predictions = defaultdict(list)
+
+CLASSIFIERS = [
+        ['Bernoulli', True, False, train_bernoulliNB],
+        ['Multinomial', False, False, train_multinomialNB],
+        ['Binarized multinomial', True, False, train_multinomialNB],
+        ['Colored Bernoulli', True, True, train_bernoulliNB],
+        ['Colored Multinomial', False, True, train_multinomialNB],
+        ['Colored Binarized multinomial', True, True, train_multinomialNB],
+        ]
+
+for i in range(1):
+    print('\n### RUN NUMBER', i + 1, '###')
+    training, test = get_fold(i, data, n_folds=n_folds)
+
+    # append correct test labels to predictions dict
+    predictions['correct'] += [label for review, label in test]
+
+    print('Getting adjectives and measuring occurrence ...')
+    adjectives = frequent_adjectives(training, threshold=10)
+    adj_occurrence = [(extract_features(review, adjectives, binarized=True),
+                       label)
+                      for review, label in training]
+
+    print('Calculating mutual information to decide features ...')
+    mutual_info_for_adjs = mutual_information(adj_occurrence, adjectives)
+    fold_features = {feature
+                     for feature, mut_info in sorted(
+                             mutual_info_for_adjs.items(), key=lambda x: x[1]
+                             )[:1000]
+                     }
+
+    print('Making AdjDists to determine modifiers ...')
+    adj_dists = make_adj_dists(fold_features, training)
+
+    print('Making modifier dicts for all features based on their clusters ...')
+    ADJ_MODIFIERS = {}
+    for adj in fold_features:
+        mod_clusters = adj_dists[adj].cluster_conditions(
+                comparison='Ø', sd_cutoff=0.1
+                )
+        ADJ_MODIFIERS[adj] = {mod[0]: kind
+                              for kind in mod_clusters
+                              for mod in mod_clusters[kind]}
+
+    print('Making modifier dicts for clusters across adjectives ...')
+    clusters = clusters_across_adjs(adj_dists, comparison='#ALL#',
+                                    test_parameters={'mean'}, sd_cutoff=0)
+    ALL_MODIFIERS = {}
+    modifiers = set.union(*[set(mods.keys()) for mods in clusters.values()])
+    for mod in modifiers:
+        counts = {kind: dist[mod] for kind, dist in clusters.items()
+                  if mod in dist.keys()}
+        ALL_MODIFIERS[mod] = max(counts.keys(), key=lambda x: counts[x])
+
+    # train and test each classifier and report results
+    for classifier, binary, colored, train_clf in CLASSIFIERS:
+        print(classifier, end=': ')
+        if colored:
+            features = {kind + feature for kind in {'', 'NEG', 'AMPL', 'DOWN'}
+                        for feature in fold_features}
+        else:
+            features = fold_features
+        processed_data = [(extract_features(review, features, binarized=binary,
+                                            colored_bigrams=colored), label)
+                          for review, label in data]
+        training, test = get_fold(i, processed_data, n_folds=n_folds)
+        clf = train_clf(training)
+        acc = accuracy(clf, test)
+        results[classifier].append(acc)
+        predictions[classifier] += list(clf.predict([r for r, l in test]))
+        print(acc)
