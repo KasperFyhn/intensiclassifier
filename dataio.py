@@ -76,20 +76,16 @@ def extract_imdb_reviews(review_file):
     return reviews
 
 
-def _process_review(review, i, n):
-    """A private function to process a review and POS-tag it while keeping
-    count of how long it is in the process."""
-
-    print(f'\rProcessing {i + 1} of {n} reviews', end='')
-    return nltk.pos_tag(nltk.word_tokenize(review[0].strip())), review[1]
-
-
 def process_reviews(reviews: list):
     """Return a list of the passed reviews with each review being tokenized and
     POS-tagged."""
 
+    def process_review(review, i, n):
+        print(f'\rProcessing {i + 1} of {n} reviews', end='')
+        return nltk.pos_tag(nltk.word_tokenize(review[0].strip())), review[1]
+
     n = len(reviews)
-    processed = [_process_review(review, i, n)
+    processed = [process_review(review, i, n)
                  for i, review in enumerate(reviews)]
     return processed
 

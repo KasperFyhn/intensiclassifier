@@ -1,5 +1,6 @@
 # large data files
 processed_data/100kbooks
+sorted_data
 imdb_data
 
 # Byte-compiled / optimized / DLL files
@@ -109,6 +110,3 @@ venv.bak/
 
 # PyCharm
 .idea/
-
-# full data collection
-/sorted_data
