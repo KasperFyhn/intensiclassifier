@@ -1,0 +1,8 @@
+## 1kfeatures_times10_mutinfo_2kimdbmovies ##
+data = load_data(r"processed_data\imdb_movies_binary_2k")
+n_folds = 10
+measure_mutual_information = True
+include_bigram_classifiers = True
+multi_bigrams = 10
+n_features = 1000
+comparison='Ø', test_parameters={'score'}, sd_cutoff=0.1

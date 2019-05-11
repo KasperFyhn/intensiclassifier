@@ -361,7 +361,7 @@ def resolve_sentence_polarities(data):
     return resolved_data
 
 
-def frequent_adjectives(data, n=None, threshold=5):
+def frequent_adjectives(data, n=None, threshold=5, bigrams=False):
     """Return a set of N adjectives (and adjectival verbs) that are the most
     frequent across the data and more frequent than the given threshold. If
     n_adjs is None, all adjs above the threshold will be returned."""
@@ -370,7 +370,15 @@ def frequent_adjectives(data, n=None, threshold=5):
     adjs = nltk.FreqDist(
         word for review, label in data for word in review
         if word.pos in {'JJ', 'JJR', 'JJS'}
-    )
+        )
+    # add bigrams if requested
+    if bigrams:
+        adjs.update(
+                bigram for review, label in data
+                for bigram in nltk.bigrams(review)
+                if bigram[1].pos in {'JJ', 'JJR', 'JJS'}
+                and bigram[0].pos in {'RB', 'RBR', 'RBS'}
+                )
     # make sure that the number of adjectives do not exceed the possible
     if n and n > len(adjs):
         n = None
@@ -379,44 +387,48 @@ def frequent_adjectives(data, n=None, threshold=5):
 
 
 def extract_features(review: list, features: set, binarized=False,
-                     colored_bigrams=False):
+                     bigrams=False, colored=False):
     """Create a sparse vector of counts based on the given feature set for the
     given review. If 'binarized' is set, the count stops at 1 and thus also
-    works as boolean."""
+    works as boolean. If 'bigrams' is set, bigram features are also tested.
+    If 'colored' is set, the bigram features will be colored."""
 
-    if colored_bigrams:
+    if bigrams:
         fdist = nltk.FreqDist()
         # make bigrams, but keep only relevant ones - i.e. with adjectives
         relevant_bigrams = [bigram for bigram in nltk.bigrams(review)
                             if bigram[1].pos in {'JJ', 'JJR', 'JJS'}]
-        # run over bigrams to check how/if they are modified
-        for bigram in relevant_bigrams:
-            mod, adj = bigram
-            # look only at adjectives that are actually features
-            if adj in features:
-                # test for modifier only if it's an adverb
-                if mod.pos in {'RB', 'RBR', 'RBS'}:
-                    # if the modifier has been seen with the adjective before
-                    if mod in ADJ_MODIFIERS[adj]:
-                        kind = ADJ_MODIFIERS[adj][mod]
-                    # if it has been seen with other adjectives
-                    elif mod in ALL_MODIFIERS:
-                        kind = ALL_MODIFIERS[mod]
-                    # probably something unique, set as raw
+        if colored:
+            # run over bigrams to check how/if they are modified
+            for bigram in relevant_bigrams:
+                mod, adj = bigram
+                # look only at adjectives that are actually features
+                if adj in features:
+                    # test for modifier only if it's an adverb
+                    if mod.pos in {'RB', 'RBR', 'RBS'}:
+                        # if the modifier has been seen with the adj before
+                        if mod in ADJ_MODIFIERS[adj]:
+                            kind = ADJ_MODIFIERS[adj][mod]
+                        # if it has been seen with other adjectives
+                        elif mod in ALL_MODIFIERS:
+                            kind = ALL_MODIFIERS[mod]
+                        # probably something unique, set as raw
+                        else:
+                            kind = ''
+                        # we don't want UNDEC as a feature on its own, set as
+                        # raw, but if it was UNDEC as seen with the adjective,
+                        # we want to know. Therefore, the label must be kept
+                        if kind == 'UNDEC':
+                            kind = ''
+                    # if not preceded as modifier, count as raw
                     else:
                         kind = ''
-                    # we don't want UNDEC as a feature on its own, set as raw
-                    # but if it was UNDEC as seen with the adjective, we want
-                    # to know. Therefore, the label must be kept
-                    if kind == 'UNDEC':
-                        kind = ''
-                # if not preceded as modifier, count as raw
-                else:
-                    kind = ''
-                # increment the count of the colored adj
-                fdist[kind+adj] += 1
-            else:
-                continue
+                    # increment the count of the colored adj
+                    fdist[kind+adj] += 1
+                else:  # if adj not in features
+                    continue
+        else:
+            fdist = nltk.FreqDist(word for word in review + relevant_bigrams)
     else:
         fdist = nltk.FreqDist(word for word in review)
 
@@ -486,21 +498,36 @@ def accuracy(clf, test):
 
 # load data, make folds and prepare soon-to-be dataframes
 data = load_data(r"processed_data\imdb_movies")
+# binarize data
+# data = [(review, '0' if label in ['1.0', '2.0'] else '1')
+#        for review, label in data]
 random.shuffle(data)
 n_folds = 10
 results = defaultdict(list)  # raw accuracy
 predictions = defaultdict(list)  # predictions and correct for conf matrices
 measure_mutual_information = False
+include_bigram_classifiers = True
+min_n_mod_count = 5
+multi_bigrams = 10
+n_features = 2000
 
 # prepared parameter values etc. for the different types of classifiers
+# NAME, BINARIZED FEATURE VALUES, BIGRAM FEATURES, COLORED, CLASSIFIER TYPE
 CLASSIFIERS = [
-        ['Bernoulli', True, False, train_bernoulliNB],
-        ['Multinomial', False, False, train_multinomialNB],
-        ['Binarized Multinomial', True, False, train_multinomialNB],
-        ['Colored Bernoulli', True, True, train_bernoulliNB],
-        ['Colored Multinomial', False, True, train_multinomialNB],
-        ['Colored Binarized Multinomial', True, True, train_multinomialNB],
+        ['Bernoulli', True, False, False, train_bernoulliNB],
+        ['Multinomial', False, False, False, train_multinomialNB],
+        ['Binarized Multinomial', True, False, False, train_multinomialNB],
+        ['Colored Bernoulli', True, True, True, train_bernoulliNB],
+        ['Colored Multinomial', False, True, True, train_multinomialNB],
+        ['Colored B. Multinomial', True, True, True, train_multinomialNB]
         ]
+
+if include_bigram_classifiers:
+    CLASSIFIERS += [
+            ['Bigram Bernoulli', True, True, False, train_bernoulliNB],
+            ['Bigram Multinomial', False, True, False, train_multinomialNB],
+            ['Bigram B. Multinomial', True, True, False, train_multinomialNB]
+            ]
 
 for i in range(n_folds):
     print('\n### RUN NUMBER', i + 1, '###')
@@ -509,6 +536,7 @@ for i in range(n_folds):
     # append correct test labels to predictions dict
     predictions['correct'] += [label for review, label in test]
 
+    # prepare feature sets for later use
     if measure_mutual_information:
         print('Getting adjectives and measuring occurrence ...')
         adjectives = frequent_adjectives(training, threshold=10)
@@ -524,14 +552,48 @@ for i in range(n_folds):
                          for feature, mut_info in sorted(
                                  mutual_info_for_adjs.items(),
                                  key=lambda x: x[1]
-                                 )
-                         if not mut_info == 0.0
+                                 )[:n_features]
                          ]
     else:
-        fold_features = frequent_adjectives(training, threshold=10)
+        fold_features = frequent_adjectives(training, threshold=10,
+                                            n=n_features)
+    print(f'Made unigram feature set of {len(fold_features)} of {n_features}' +
+          'possible')
+    if include_bigram_classifiers:
+        print('Preparing bigram features ...')
+        if measure_mutual_information:
+            print('Getting bigrams and measuring occurrence ...')
+            bigrams = frequent_adjectives(training, threshold=5, bigrams=True,
+                                          n=n_features*multi_bigrams)
+            # note bigram occurences for each class to calculate mutual info
+            big_occurrence = [(extract_features(review, bigrams,
+                                                binarized=True), label)
+                              for review, label in training]
+            print('Calculating mutual information to decide features ...')
+            mutual_info_for_bigs = mutual_information(big_occurrence,
+                                                      bigrams)
+            # make a feature set of the bigrams with highest mutual info
+            bigram_features = [feature
+                               for feature, mut_info in sorted(
+                                       mutual_info_for_bigs.items(),
+                                       key=lambda x: x[1]
+                                       )[:n_features*multi_bigrams]
+                               ]
+        else:
+            bigram_features = frequent_adjectives(training, threshold=5,
+                                                  bigrams=True,
+                                                  n=n_features*multi_bigrams)
+        print(f'Made a bigram feature set of {len(bigram_features)} of ' +
+              f'{n_features * multi_bigrams} possible.')
 
-    print('Making AdjDists to determine modifiers ...')
-    adj_dists = make_adj_dists(fold_features, training)
+    # colored_features = {kind + feature for kind in {'', 'NEG', 'AMPL', 'DOWN'}
+    #                    for feature in fold_features}
+
+    print('Making balanced dataset for AdjDists ...')
+    # if one or more classes is over-represented, adj dists will be skewed
+    balanced_training = dataio.make_balanced_dataset(training,
+                                                     size=len(training))
+    adj_dists = make_adj_dists(fold_features, balanced_training)
 
     print('Making modifier dicts for all features based on their clusters ...')
     # prepare a 2d dict with modifiers that are seen with the specific adjs
@@ -545,6 +607,20 @@ for i in range(n_folds):
                               for kind in mod_clusters
                               for mod in mod_clusters[kind]}
 
+    # TEST: THIS MIGHT MAKE SENSE EVEN IF IT DOES NOT WORK THE FIRST TIME #
+    # add only as colored features those that have been seen modified
+    colored_features = set()
+    for feature in fold_features:
+        if feature in ADJ_MODIFIERS:
+            for kind in set(ADJ_MODIFIERS[feature].values()):
+                if kind == 'UNDEC':
+                    kind = ''
+                colored_features.add(kind + feature)
+    colored_features = colored_features.union(fold_features)
+
+    print(f'Made a colored feature set of {len(colored_features)} of ' +
+          f'{len(fold_features) * 4} possible.')
+
     print('Making modifier dicts for clusters across adjectives ...')
     # prepare a dict of all seen modifiers and their types for when they have
     # not been seen before with a certain adjective
@@ -555,22 +631,30 @@ for i in range(n_folds):
     for mod in modifiers:
         counts = {kind: dist[mod] for kind, dist in clusters.items()
                   if mod in dist.keys()}
-        ALL_MODIFIERS[mod] = max(counts.keys(), key=lambda x: counts[x])
+        # if the modifier occurs very few times, across the data, it might
+        # result in overfitting
+        if sum(counts.values()) < min_n_mod_count:
+            continue
+        else:
+            ALL_MODIFIERS[mod] = max(counts.keys(), key=lambda x: counts[x])
 
     # train and test each classifier and report results
-    for classifier, binary, colored, train_clf in CLASSIFIERS:
+    for classifier, binary, bigrams, colored, train_clf in CLASSIFIERS:
         print(classifier, end=': ')
 
-        # determine the classifier's final feature set depending on type
-        if colored:
-            features = {kind + feature for kind in {'', 'NEG', 'AMPL', 'DOWN'}
-                        for feature in fold_features}
+        # determine the classifier's feature set depending on type
+        if bigrams:
+            if colored:
+                features = colored_features
+            else:
+                features = bigram_features
         else:
             features = fold_features
 
         # process data and train
-        processed_data = [(extract_features(review, features, binarized=binary,
-                                            colored_bigrams=colored), label)
+        processed_data = [(extract_features(review, features,
+                                            binarized=binary, bigrams=bigrams,
+                                            colored=colored), label)
                           for review, label in data]
         training, test = get_fold(i, processed_data, n_folds=n_folds)
         clf = train_clf(training)

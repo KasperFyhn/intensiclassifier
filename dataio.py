@@ -90,7 +90,7 @@ def process_reviews(reviews: list):
     return processed
 
 
-def make_balanced_dataset(data: list, size=10000):
+def make_balanced_dataset(data: list, size=10000, process=False):
     """Return a processed and balanced from the passed list of data"""
 
     # find out how many categories in the data and determine category size
@@ -102,10 +102,11 @@ def make_balanced_dataset(data: list, size=10000):
     cat_size = size / len(categories)
     min_val = min(categories.values())
     if cat_size > min_val:
+        requested = size
         cat_size = min_val
         size = min_val * len(categories)
         print('There are categories with too few reviews to make an even ' +
-              'dataset of the requested size. Each category will contain ' +
+              f'dataset of length {requested}. Each category will contain ' +
               f'{min_val} reviews, giving a total of {size} reviews.')
 
     # reset category counter for the iteration
@@ -119,8 +120,10 @@ def make_balanced_dataset(data: list, size=10000):
         if not categories[cat] >= cat_size:
             categories[cat] += 1
             balanced_list.append(review)
-
-    return process_reviews(balanced_list)
+    if process:
+        return process_reviews(balanced_list)
+    else:
+        return balanced_list
 
 
 def read_processed_data_from_file(file, encoding='latin1'):

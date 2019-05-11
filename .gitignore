@@ -1,7 +1,11 @@
 # large data files
-processed_data/100kbooks
+processed_data
 sorted_data
 imdb_data
+
+# R data + history
+.RData
+.Rhistory
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
