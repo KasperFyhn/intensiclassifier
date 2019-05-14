@@ -1,8 +1,10 @@
-## 1kfeatures_times10_mutinfo_2kimdbmovies ##
-data = load_data(r"processed_data\imdb_movies_binary_2k")
-n_folds = 10
-measure_mutual_information = True
-include_bigram_classifiers = True
-multi_bigrams = 10
+## 2kimdb_1kfeatures_4folds_multi4 ##
+n_folds = 4
 n_features = 1000
-comparison='Ø', test_parameters={'score'}, sd_cutoff=0.1
+measure_mutual_information = False
+include_bigram_classifiers = True
+filter_bigram_features = True
+multi_bigrams = 4
+min_n_mod_count = 2
+sd_cut = 0.1
+print_to_file = True

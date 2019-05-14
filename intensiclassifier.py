@@ -8,6 +8,7 @@ from collections import defaultdict
 import random
 import matplotlib.pyplot as plt
 
+
 class Word(str):
     """A string representation in which the passed POS tag can be retrieved
     through the attribute 'pos'."""
@@ -21,6 +22,12 @@ class Word(str):
 
         items = word_and_tag.split('\\')
         self.pos = items[1]
+        self.negated = False
+
+    def set_polarity(self, value):
+
+        self.negated = value
+        return self
 
 
 # private variables used by AdjDist.from_data
@@ -50,10 +57,13 @@ class AdjDist(nltk.ConditionalFreqDist):
         # find all bigrams with the word as word 2
         bigrams = [(bigram, float(label)) for bigram, label in labeled_bigrams
                    if bigram[1] == word]
-        cond_samples = [(bigram[0] if bigram[0].pos in {'RB', 'RBR', 'RBS'}
-                         else 'Ø', label)
+        cond_samples = [
+                ('not' if bigram[1].negated
+                 else bigram[0] if bigram[0].pos in {'RB', 'RBR', 'RBS'}
+                 else 'Ø', label)
                         for bigram, label in bigrams]
         cond_samples += [('#ALL#', label) for bigram, label in bigrams]
+
 
         return cls(cond_samples)
 
@@ -99,6 +109,7 @@ class AdjDist(nltk.ConditionalFreqDist):
         return new
 
     def cluster_conditions(self, sd_cutoff=0.1, comparison='Ø',
+                           min_occurrence_of_mod=5,
                            test_parameters=('mean', 'median', 'mode')):
         """Return a dict with keys 'DOWN', 'AMPL' and 'UNDEC' with their values
         being sets containing the modifiers behaving as such.
@@ -121,34 +132,28 @@ class AdjDist(nltk.ConditionalFreqDist):
             # in which case a negative correction is used for measures onwards
             if p == 'AMPL':
                 correction = -1
-                done = True
+                done = True  # move on
                 break
             # if lower score, word is positive
             elif p == 'DOWN':
                 correction = 1
-                done = True
+                done = True  # move on
                 break
         # if no answer from polarity, find out if the word is pos or neg
         # based on mean, median and mode scores on the scale in general
         if not done:
-            samples = self._possible_outcomes()
-            mean_of_samples = sum(samples) / len(samples)
-            pos, neg = 0, 0
+            outcomes = self._possible_outcomes()
+            overall_mean = sum(outcomes) / len(outcomes)
             if comparison == 'Ø' and 'Ø' not in self.conditions():
                 comparison = '#ALL#'
-            comparison_scores = {'mean': self.mean(comparison),
-                                 'median': self.median(comparison),
-                                 'mode': self.mode_value(comparison)}
-            for value in comparison_scores.values():
-                if value >= mean_of_samples:
-                    pos += 1
-                elif value < mean_of_samples:
-                    neg += 1
             # if negative word, use a minus factor for measures onwards
-            if pos < neg:
+            if self.overall_score(comparison) < overall_mean * 0.8:
                 correction = -1
-            else:
+            elif self.overall_score(comparison) > overall_mean * 1.2:
                 correction = 1
+            else:
+                return clusters
+
 
         # conditions of actual modifiers, i.e. excl the ALL and Ø categories
         # as well as negations which are added to its own cluster
@@ -160,13 +165,14 @@ class AdjDist(nltk.ConditionalFreqDist):
 
         # run through each condition and test how it behaves compared to raw
         for cond in mod_conditions:
-            kind = self.compare_conditions(cond, comparison,
-                                           correction=correction,
-                                           sd_cutoff=sd_cutoff,
-                                           test_parameters=test_parameters)
-            clusters[kind].add(
-                    (cond, len(self.observations(cond)))
-                    )
+            if len(self.observations(cond)) > min_occurrence_of_mod:
+                kind = self.compare_conditions(cond, comparison,
+                                               correction=correction,
+                                               sd_cutoff=sd_cutoff,
+                                               test_parameters=test_parameters)
+                clusters[kind].add(
+                        (cond, len(self.observations(cond)))
+                        )
 
         return clusters
 
@@ -291,10 +297,11 @@ class AdjDist(nltk.ConditionalFreqDist):
     def _possible_outcomes(self):
         """Return the possible outcomes across all conditions."""
 
-        return {sample for cond in self.values() for sample in cond.keys()}
+        return {outcome for cond in self.values() for outcome in cond.keys()}
 
 
 def clusters_across_adjs(adjdists: dict, sd_cutoff=0.1, comparison='Ø',
+                         min_occurrence_of_mod=5,
                          test_parameters=('mean', 'median', 'mode')):
     """Return a ConditionalFreqDist of clustering of modifiers across a range
     of AdjDists"""
@@ -304,6 +311,7 @@ def clusters_across_adjs(adjdists: dict, sd_cutoff=0.1, comparison='Ø',
         for dist in adjdists.values()
         for mod_type, modifiers in dist.cluster_conditions(
             sd_cutoff=sd_cutoff, comparison=comparison,
+            min_occurrence_of_mod=5,
             test_parameters=test_parameters
         ).items()
         for modifier, count in modifiers if not modifier == 'Ø'
@@ -350,8 +358,8 @@ def resolve_sentence_polarities(data):
         resolved_sents = []
         for sentence in sentences:
             if 'not' in sentence or 'never' in sentence or "n't" in sentence:
-                sentence = [Word('NOT_' + word + '\\' + word.pos)
-                            for word in sentence]
+                for word in sentence:
+                    word.set_polarity(True)
             resolved_sents.append(sentence)
 
         flattened_sents = [word for sentence in resolved_sents
@@ -361,23 +369,29 @@ def resolve_sentence_polarities(data):
     return resolved_data
 
 
-def frequent_adjectives(data, n=None, threshold=5, bigrams=False):
+def frequent_adjectives(data, n=None, threshold=10, bigrams=False,
+                        filter_function=None):
     """Return a set of N adjectives (and adjectival verbs) that are the most
     frequent across the data and more frequent than the given threshold. If
     n_adjs is None, all adjs above the threshold will be returned."""
 
     # get all adjs from the data and make a frequency distribution
     adjs = nltk.FreqDist(
-        word for review, label in data for word in review
-        if word.pos in {'JJ', 'JJR', 'JJS'}
+        filter(filter_function,
+               (word for review, label in data for word in review
+                if word.pos in {'JJ', 'JJR', 'JJS'})
+               )
         )
     # add bigrams if requested
     if bigrams:
         adjs.update(
-                bigram for review, label in data
-                for bigram in nltk.bigrams(review)
-                if bigram[1].pos in {'JJ', 'JJR', 'JJS'}
-                and bigram[0].pos in {'RB', 'RBR', 'RBS'}
+                filter(lambda x: True if not filter_function
+                       else filter_function(x[1]),
+                       (bigram for review, label in data
+                        for bigram in nltk.bigrams(review)
+                        if bigram[1].pos in {'JJ', 'JJR', 'JJS'}
+                        and bigram[0].pos in {'RB', 'RBR', 'RBS'})
+                       )
                 )
     # make sure that the number of adjectives do not exceed the possible
     if n and n > len(adjs):
@@ -393,44 +407,49 @@ def extract_features(review: list, features: set, binarized=False,
     works as boolean. If 'bigrams' is set, bigram features are also tested.
     If 'colored' is set, the bigram features will be colored."""
 
-    if bigrams:
-        fdist = nltk.FreqDist()
+    if bigrams or colored:
         # make bigrams, but keep only relevant ones - i.e. with adjectives
         relevant_bigrams = [bigram for bigram in nltk.bigrams(review)
                             if bigram[1].pos in {'JJ', 'JJR', 'JJS'}]
-        if colored:
-            # run over bigrams to check how/if they are modified
-            for bigram in relevant_bigrams:
-                mod, adj = bigram
-                # look only at adjectives that are actually features
-                if adj in features:
-                    # test for modifier only if it's an adverb
-                    if mod.pos in {'RB', 'RBR', 'RBS'}:
-                        # if the modifier has been seen with the adj before
-                        if mod in ADJ_MODIFIERS[adj]:
-                            kind = ADJ_MODIFIERS[adj][mod]
-                        # if it has been seen with other adjectives
-                        elif mod in ALL_MODIFIERS:
-                            kind = ALL_MODIFIERS[mod]
-                        # probably something unique, set as raw
-                        else:
-                            kind = ''
-                        # we don't want UNDEC as a feature on its own, set as
-                        # raw, but if it was UNDEC as seen with the adjective,
-                        # we want to know. Therefore, the label must be kept
-                        if kind == 'UNDEC':
-                            kind = ''
-                    # if not preceded as modifier, count as raw
+
+    if colored:
+        fdist = nltk.FreqDist()
+        # run over bigrams to check how/if they are modified
+        for bigram in relevant_bigrams:
+            mod, adj = bigram
+            # look only at adjectives that are actually features
+            if adj in features:
+                # test for modifier only if it's an adverb
+                if adj.negated:
+                    kind = 'NEG'
+                elif mod.pos in {'RB', 'RBR', 'RBS'} and adj in ADJ_MODIFIERS:
+                    # if the modifier has been seen with the adj before
+                    if mod in ADJ_MODIFIERS[adj]:
+                        kind = ADJ_MODIFIERS[adj][mod]
+                    # if it has been seen with other adjectives
+                    elif mod in ALL_MODIFIERS:
+                        kind = ALL_MODIFIERS[mod]
+                    # probably something unique, set as raw
                     else:
                         kind = ''
-                    # increment the count of the colored adj
-                    fdist[kind+adj] += 1
-                else:  # if adj not in features
-                    continue
-        else:
-            fdist = nltk.FreqDist(word for word in review + relevant_bigrams)
-    else:
+                    # we don't want UNDEC as a feature on its own, so set as
+                    # raw, but if it was UNDEC as seen with the adjective,
+                    # we want to know. Therefore, the label must be kept
+                    if kind == 'UNDEC':
+                        kind = ''
+                # if not preceded as modifier, count as raw
+                else:
+                    kind = ''
+                # increment the count of the colored adj
+                fdist[kind+adj] += 1
+            else:  # if adj not in features
+                continue
+    elif not colored:
         fdist = nltk.FreqDist(word for word in review)
+
+    if bigrams:
+        # add the raw bigrams to the fdist
+        fdist.update(bigram for bigram in relevant_bigrams)
 
     if binarized:
         return [1 if fdist[feature] > 0 else 0 for feature in features]
@@ -492,7 +511,7 @@ def mutual_information(training, features):
 def accuracy(clf, test):
     """Return the accuracy of the classifier on the test set."""
 
-    reviews, labels = split_labeled_reviews(training)
+    reviews, labels = split_labeled_reviews(test)
     return clf.score(reviews, labels)
 
 
@@ -500,16 +519,20 @@ def accuracy(clf, test):
 data = load_data(r"processed_data\imdb_movies")
 # binarize data
 # data = [(review, '0' if label in ['1.0', '2.0'] else '1')
-#        for review, label in data]
+#         for review, label in data]
 random.shuffle(data)
-n_folds = 10
 results = defaultdict(list)  # raw accuracy
 predictions = defaultdict(list)  # predictions and correct for conf matrices
+n_folds = 4
+n_features = 2000
 measure_mutual_information = False
 include_bigram_classifiers = True
+filter_bigram_features = False
+multi_bigrams = 4
 min_n_mod_count = 5
-multi_bigrams = 10
-n_features = 2000
+sd_cut = 0.2
+test_params = {'score'}
+print_to_file = False
 
 # prepared parameter values etc. for the different types of classifiers
 # NAME, BINARIZED FEATURE VALUES, BIGRAM FEATURES, COLORED, CLASSIFIER TYPE
@@ -517,17 +540,16 @@ CLASSIFIERS = [
         ['Bernoulli', True, False, False, train_bernoulliNB],
         ['Multinomial', False, False, False, train_multinomialNB],
         ['Binarized Multinomial', True, False, False, train_multinomialNB],
-        ['Colored Bernoulli', True, True, True, train_bernoulliNB],
-        ['Colored Multinomial', False, True, True, train_multinomialNB],
-        ['Colored B. Multinomial', True, True, True, train_multinomialNB]
+        ['Colored Bernoulli', True, False, True, train_bernoulliNB],
+        ['Colored Multinomial', False, False, True, train_multinomialNB],
+        ['Colored B. Multinomial', True, False, True, train_multinomialNB],
+        ['Bigram Bernoulli', True, True, False, train_bernoulliNB],
+        ['Bigram Multinomial', False, True, False, train_multinomialNB],
+        ['Bigram B. Multinomial', True, True, False, train_multinomialNB],
+        ['Colored Bigram Bernoulli', True, True, True, train_bernoulliNB],
+        ['Colored Bigram Multinomial', False, True, True, train_multinomialNB],
+        ['Colored Bigram B. Multinom.', True, True, True, train_multinomialNB]
         ]
-
-if include_bigram_classifiers:
-    CLASSIFIERS += [
-            ['Bigram Bernoulli', True, True, False, train_bernoulliNB],
-            ['Bigram Multinomial', False, True, False, train_multinomialNB],
-            ['Bigram B. Multinomial', True, True, False, train_multinomialNB]
-            ]
 
 for i in range(n_folds):
     print('\n### RUN NUMBER', i + 1, '###')
@@ -539,76 +561,60 @@ for i in range(n_folds):
     # prepare feature sets for later use
     if measure_mutual_information:
         print('Getting adjectives and measuring occurrence ...')
-        adjectives = frequent_adjectives(training, threshold=10)
+        adjectives = frequent_adjectives(training, n=n_features*2)
         # note adj occurences for each class to calculate mutual information
         adj_occurrence = [(extract_features(review, adjectives,
                                             binarized=True), label)
                           for review, label in training]
 
         print('Calculating mutual information to decide features ...')
-        mutual_info_for_adjs = mutual_information(adj_occurrence, adjectives)
+        mutual_info_for_adjs = mutual_information(adj_occurrence,
+                                                  list(adjectives))
         # make a feature set for this fold of the ones with highest mutual info
-        fold_features = [feature
+        fold_features = {feature
                          for feature, mut_info in sorted(
                                  mutual_info_for_adjs.items(),
-                                 key=lambda x: x[1]
+                                 key=lambda x: x[1], reverse=True
                                  )[:n_features]
-                         ]
+                         if not mut_info == 0.0
+                         }
     else:
-        fold_features = frequent_adjectives(training, threshold=10,
-                                            n=n_features)
+        fold_features = frequent_adjectives(training, n=n_features)
     print(f'Made unigram feature set of {len(fold_features)} of {n_features}' +
-          'possible')
-    if include_bigram_classifiers:
-        print('Preparing bigram features ...')
-        if measure_mutual_information:
-            print('Getting bigrams and measuring occurrence ...')
-            bigrams = frequent_adjectives(training, threshold=5, bigrams=True,
-                                          n=n_features*multi_bigrams)
-            # note bigram occurences for each class to calculate mutual info
-            big_occurrence = [(extract_features(review, bigrams,
-                                                binarized=True), label)
-                              for review, label in training]
-            print('Calculating mutual information to decide features ...')
-            mutual_info_for_bigs = mutual_information(big_occurrence,
-                                                      bigrams)
-            # make a feature set of the bigrams with highest mutual info
-            bigram_features = [feature
-                               for feature, mut_info in sorted(
-                                       mutual_info_for_bigs.items(),
-                                       key=lambda x: x[1]
-                                       )[:n_features*multi_bigrams]
-                               ]
-        else:
-            bigram_features = frequent_adjectives(training, threshold=5,
-                                                  bigrams=True,
-                                                  n=n_features*multi_bigrams)
-        print(f'Made a bigram feature set of {len(bigram_features)} of ' +
-              f'{n_features * multi_bigrams} possible.')
-
-    # colored_features = {kind + feature for kind in {'', 'NEG', 'AMPL', 'DOWN'}
-    #                    for feature in fold_features}
+          ' possible')
 
     print('Making balanced dataset for AdjDists ...')
     # if one or more classes is over-represented, adj dists will be skewed
     balanced_training = dataio.make_balanced_dataset(training,
                                                      size=len(training))
     adj_dists = make_adj_dists(fold_features, balanced_training)
+    # if all occurrences of a feature has been sorted out when making the
+    # balanced dataset, the AdjDist will have no outcomes, so filter these
+    adj_not_in_balanced = {adj for adj, d in adj_dists.items() if len(d) == 0}
+    if len(adj_not_in_balanced) > 0:
+        print('Some adjectives are not attested in the balanced dataset and ' +
+              'will be deleted from the feature set. These are:', end=' ')
+        for adj in adj_not_in_balanced:
+            print(adj, end=', ')
+            del adj_dists[adj]
+            fold_features.remove(adj)
 
     print('Making modifier dicts for all features based on their clusters ...')
     # prepare a 2d dict with modifiers that are seen with the specific adjs
     # in order to retrieve their types
     ADJ_MODIFIERS = {}
-    for adj in fold_features:
-        mod_clusters = adj_dists[adj].cluster_conditions(
-                comparison='Ø', test_parameters={'score'}, sd_cutoff=0.1
+    for adj, dist in adj_dists.items():
+        mod_clusters = dist.cluster_conditions(
+                comparison='Ø', test_parameters=test_params, sd_cutoff=sd_cut,
+                min_occurrence_of_mod=min_n_mod_count
                 )
         ADJ_MODIFIERS[adj] = {mod[0]: kind
                               for kind in mod_clusters
                               for mod in mod_clusters[kind]}
 
-    # TEST: THIS MIGHT MAKE SENSE EVEN IF IT DOES NOT WORK THE FIRST TIME #
-    # add only as colored features those that have been seen modified
+    # add only as colored features those mod+adj combination types that are
+    # attested in the data. If not, when encountering an unseen combination,
+    # the feature will be useless
     colored_features = set()
     for feature in fold_features:
         if feature in ADJ_MODIFIERS:
@@ -617,7 +623,6 @@ for i in range(n_folds):
                     kind = ''
                 colored_features.add(kind + feature)
     colored_features = colored_features.union(fold_features)
-
     print(f'Made a colored feature set of {len(colored_features)} of ' +
           f'{len(fold_features) * 4} possible.')
 
@@ -625,7 +630,9 @@ for i in range(n_folds):
     # prepare a dict of all seen modifiers and their types for when they have
     # not been seen before with a certain adjective
     clusters = clusters_across_adjs(adj_dists, comparison='Ø',
-                                    test_parameters={'score'}, sd_cutoff=0.1)
+                                    test_parameters=test_params,
+                                    sd_cutoff=sd_cut,
+                                    min_occurrence_of_mod=min_n_mod_count)
     ALL_MODIFIERS = {}
     modifiers = set.union(*[set(mods.keys()) for mods in clusters.values()])
     for mod in modifiers:
@@ -638,16 +645,58 @@ for i in range(n_folds):
         else:
             ALL_MODIFIERS[mod] = max(counts.keys(), key=lambda x: counts[x])
 
+    if include_bigram_classifiers:
+        if filter_bigram_features:
+            # sort out unigrams that are not in the unigram features
+            def bigram_filter(word):
+                if word in fold_features:
+                    return True
+                else:
+                    return False
+        else:
+            bigram_filter = None
+
+        if measure_mutual_information:
+            print('Getting bigrams and measuring occurrence ...')
+            bigrams = frequent_adjectives(training, bigrams=True,
+                                          filter_function=bigram_filter,
+                                          threshold=5,
+                                          n=n_features*multi_bigrams*2)
+            # note bigram occurences for each class to calculate mutual info
+            bigram_occurrence = [(extract_features(review, bigrams,
+                                                   binarized=True), label)
+                                 for review, label in training]
+            print('Calculating mutual information to decide features ...')
+            mutual_info_for_bigs = mutual_information(bigram_occurrence,
+                                                      list(bigrams))
+            # make a feature set of the bigrams with highest mutual info
+            bigram_features = {feature
+                               for feature, mut_info in sorted(
+                                       mutual_info_for_bigs.items(),
+                                       key=lambda x: x[1], reverse=True
+                                       )[:n_features*multi_bigrams]
+                               if not mut_info == 0.0
+                               }
+        else:
+            bigram_features = frequent_adjectives(
+                    training, bigrams=True, threshold=5,
+                    n=n_features*multi_bigrams, filter_function=bigram_filter
+                    )
+
+        print(f'Made a bigram feature set of {len(bigram_features)} of ' +
+              f'{n_features * multi_bigrams} possible.')
+
     # train and test each classifier and report results
     for classifier, binary, bigrams, colored, train_clf in CLASSIFIERS:
         print(classifier, end=': ')
 
         # determine the classifier's feature set depending on type
-        if bigrams:
-            if colored:
-                features = colored_features
-            else:
-                features = bigram_features
+        if bigrams and colored:
+            features = colored_features.union(bigram_features)
+        elif bigrams:
+            features = bigram_features
+        elif colored:
+            features = colored_features
         else:
             features = fold_features
 
@@ -664,3 +713,12 @@ for i in range(n_folds):
         results[classifier].append(acc)
         predictions[classifier] += list(clf.predict([r for r, l in test]))
         print(acc)
+
+if print_to_file:
+    name = input('Input file name: ')
+    pd.DataFrame(predictions).to_csv(
+            'previous_runs/' + name + 'predictions.csv'
+            )
+    pd.DataFrame(results).to_csv(
+            'previous_runs/' + name + 'results.csv'
+            )
