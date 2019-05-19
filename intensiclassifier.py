@@ -10,37 +10,6 @@ import matplotlib.pyplot as plt
 from adjdist import *
 
 
-def frequent_adjectives(data, n=None, threshold=10, bigrams=False,
-                        filter_function=None):
-    """Return a set of N adjectives (and adjectival verbs) that are the most
-    frequent across the data and more frequent than the given threshold. If
-    n_adjs is None, all adjs above the threshold will be returned."""
-
-    # get all adjs from the data and make a frequency distribution
-    adjs = nltk.FreqDist(
-        filter(filter_function,
-               (word for review, label in data for word in review
-                if word.pos in {'JJ', 'JJR', 'JJS'})
-               )
-        )
-    # add bigrams if requested
-    if bigrams:
-        adjs.update(
-                filter(lambda x: True if not filter_function
-                       else filter_function(x[1]),
-                       (bigram for review, label in data
-                        for bigram in nltk.bigrams(review)
-                        if bigram[1].pos in {'JJ', 'JJR', 'JJS'}
-                        and bigram[0].pos in {'RB', 'RBR', 'RBS'})
-                       )
-                )
-    # make sure that the number of adjectives do not exceed the possible
-    if n and n > len(adjs):
-        n = None
-    # return the n most common adjs above the threshold
-    return {adj for adj, freq in adjs.most_common(n) if freq >= threshold}
-
-
 def extract_features(review: list, features: set, binarized=False,
                      bigrams=False, colored=False):
     """Create a sparse vector of counts based on the given feature set for the

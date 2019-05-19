@@ -2,6 +2,7 @@ import nltk
 import math
 import dataio
 import string
+import scipy.stats as stats
 
 
 class Word(str):
@@ -275,9 +276,16 @@ class AdjDist(nltk.ConditionalFreqDist):
             return 0
         return math.sqrt((sum((x - mean)**2 for x in observations)) / (n - 1))
 
-    def entropy(self, condition):
+    def entropy(self, condition, base=None):
+        """Return the entropy of the distribution of a given condition. If base
+        is set as None (which it is as default), the log base of entropy is the
+        number of possible outcomes in the distribution."""
 
-        pass
+        prob_dist = nltk.MLEProbDist(self[condition])
+        probs = [prob_dist.prob(bin_) for bin_ in prob_dist.samples()]
+        if not base:
+            base = len(self._possible_outcomes())
+        return stats.entropy(probs, base=base)
 
     def observations(self, condition):
         """Return a sorted list of observations for the passed condition."""
@@ -351,6 +359,37 @@ def resolve_sentence_polarities(data):
         resolved_data.append((flattened_sents, label))
 
     return resolved_data
+
+
+def frequent_adjectives(data, n=None, threshold=10, bigrams=False,
+                        filter_function=None):
+    """Return a set of N adjectives (and adjectival verbs) that are the most
+    frequent across the data and more frequent than the given threshold. If
+    n_adjs is None, all adjs above the threshold will be returned."""
+
+    # get all adjs from the data and make a frequency distribution
+    adjs = nltk.FreqDist(
+        filter(filter_function,
+               (word for review, label in data for word in review
+                if word.pos in {'JJ', 'JJR', 'JJS'})
+               )
+        )
+    # add bigrams if requested
+    if bigrams:
+        adjs.update(
+                filter(lambda x: True if not filter_function
+                       else filter_function(x[1]),
+                       (bigram for review, label in data
+                        for bigram in nltk.bigrams(review)
+                        if bigram[1].pos in {'JJ', 'JJR', 'JJS'}
+                        and bigram[0].pos in {'RB', 'RBR', 'RBS'})
+                       )
+                )
+    # make sure that the number of adjectives do not exceed the possible
+    if n and n > len(adjs):
+        n = None
+    # return the n most common adjs above the threshold
+    return {adj for adj, freq in adjs.most_common(n) if freq >= threshold}
 
 
 def load_data(file):
