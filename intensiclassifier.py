@@ -20,7 +20,7 @@ def extract_features(review: list, features: set, binarized=False,
     if bigrams or colored:
         # make bigrams, but keep only relevant ones - i.e. with adjectives
         relevant_bigrams = [bigram for bigram in nltk.bigrams(review)
-                            if bigram[1].pos in {'JJ', 'JJR', 'JJS'}]
+                            if bigram in features or bigram[1] in features]
 
     if colored:
         fdist = nltk.FreqDist()
@@ -32,7 +32,7 @@ def extract_features(review: list, features: set, binarized=False,
                 # test for modifier only if it's an adverb
                 if adj.negated:
                     kind = 'NEG'
-                elif mod.pos in {'RB', 'RBR', 'RBS'} and adj in ADJ_MODIFIERS:
+                elif adj in ADJ_MODIFIERS:
                     # if the modifier has been seen with the adj before
                     if mod in ADJ_MODIFIERS[adj]:
                         kind = ADJ_MODIFIERS[adj][mod]
@@ -134,7 +134,7 @@ def accuracy(clf, test):
 
 
 # load data, make folds and prepare soon-to-be dataframes
-data = load_data(r"processed_data\books_10k")
+data = load_data(r"processed_data\imdb_movies")
 # binarize data
 # data = [(review, '0' if label in ['1.0', '2.0'] else '1')
 #         for review, label in data]
@@ -142,13 +142,12 @@ random.shuffle(data)
 results = defaultdict(list)  # raw accuracy
 predictions = defaultdict(list)  # predictions and correct for conf matrices
 n_folds = 4
-n_features = 1000
-measure_mutual_information = False
-include_bigram_classifiers = True
-filter_bigram_features = False
-multi_bigrams = 4
-min_n_mod_count = 2
-sd_cut = 0.2
+n_features = 2000
+filter_bigram_features = True
+highest_entropy = 0.95
+multi_bigrams = 2
+min_n_mod_count = 3
+threshold = 0.1
 test_params = {'score'}
 print_to_file = False
 
@@ -176,36 +175,31 @@ for i in range(n_folds):
     # append correct test labels to predictions dict
     predictions['correct'] += [label for review, label in test]
 
-    # prepare feature sets for later use
-    if measure_mutual_information:
-        print('Getting adjectives and measuring occurrence ...')
-        adjectives = frequent_adjectives(training, n=n_features*2)
-        # note adj occurences for each class to calculate mutual information
-        adj_occurrence = [(extract_features(review, adjectives,
-                                            binarized=True), label)
-                          for review, label in training]
-
-        print('Calculating mutual information to decide features ...')
-        mutual_info_for_adjs = mutual_information(adj_occurrence,
-                                                  list(adjectives))
-        # make a feature set for this fold of the ones with highest mutual info
-        fold_features = {feature
-                         for feature, mut_info in sorted(
-                                 mutual_info_for_adjs.items(),
-                                 key=lambda x: x[1], reverse=True
-                                 )[:n_features]
-                         if not mut_info == 0.0
-                         }
+    if highest_entropy:
+        # get some frequent adjectives as potential features
+        adjs = frequent_adjectives(training, threshold=30)
     else:
-        fold_features = frequent_adjectives(training, n=n_features)
-    print(f'Made unigram feature set of {len(fold_features)} of {n_features}' +
-          ' possible')
+        adjs = frequent_adjectives(training, n=n_features)
 
     print('Making balanced dataset for AdjDists ...')
     # if one or more classes is over-represented, adj dists will be skewed
     balanced_training = dataio.make_balanced_dataset(training,
                                                      size=len(training))
-    adj_dists = make_adj_dists(fold_features, balanced_training)
+    adj_dists = make_adj_dists(adjs, balanced_training)
+
+    if highest_entropy:
+        # sort out highly entropic adjectives
+        adj_entropy = sorted([(adj, dist.entropy('Ø'))
+                              for adj, dist in adj_dists.items()],
+                             key=lambda x: x[1])[:n_features]
+        adj_dists = {adj: adj_dists[adj] for adj, entropy in adj_entropy
+                     if entropy < highest_entropy}
+        print('Reduced number of AdjDists to', len(adj_dists))
+
+    fold_features = adj_dists.keys()
+    print(f'Made unigram feature set of {len(fold_features)} of {n_features}' +
+          ' possible')
+
     # if all occurrences of a feature has been sorted out when making the
     # balanced dataset, the AdjDist will have no outcomes, so filter these
     adj_not_in_balanced = {adj for adj, d in adj_dists.items() if len(d) == 0}
@@ -223,7 +217,8 @@ for i in range(n_folds):
     ADJ_MODIFIERS = {}
     for adj, dist in adj_dists.items():
         mod_clusters = dist.cluster_conditions(
-                comparison='Ø', test_parameters=test_params, sd_cutoff=sd_cut,
+                comparison='Ø', test_parameters=test_params,
+                threshold=threshold,
                 min_occurrence_of_mod=min_n_mod_count
                 )
         ADJ_MODIFIERS[adj] = {mod[0]: kind
@@ -249,60 +244,40 @@ for i in range(n_folds):
     # not been seen before with a certain adjective
     clusters = clusters_across_adjs(adj_dists, comparison='Ø',
                                     test_parameters=test_params,
-                                    sd_cutoff=sd_cut,
+                                    threshold=threshold,
                                     min_occurrence_of_mod=min_n_mod_count)
     ALL_MODIFIERS = {}
-    modifiers = set.union(*[set(mods.keys()) for mods in clusters.values()])
+    try:
+        modifiers = set.union(*[set(mods.keys())
+                                for mods in clusters.values()]
+                              )
+    except TypeError:
+        print('oops')
+
     for mod in modifiers:
         counts = {kind: dist[mod] for kind, dist in clusters.items()
                   if mod in dist.keys()}
-        # if the modifier occurs very few times, across the data, it might
-        # result in overfitting
-        if sum(counts.values()) < min_n_mod_count:
-            continue
-        else:
-            ALL_MODIFIERS[mod] = max(counts.keys(), key=lambda x: counts[x])
+        ALL_MODIFIERS[mod] = max(counts.keys(), key=lambda x: counts[x])
 
-    if include_bigram_classifiers:
-        if filter_bigram_features:
-            # sort out unigrams that are not in the unigram features
-            def bigram_filter(word):
-                if word in fold_features:
-                    return True
-                else:
-                    return False
-        else:
-            bigram_filter = None
+    # add filter for bigrams
+    if filter_bigram_features:
+        # sort out unigrams that are not in the unigram features
+        def bigram_filter(word):
+            if word in fold_features:
+                return True
+            else:
+                return False
+    else:
+        bigram_filter = None
 
-        if measure_mutual_information:
-            print('Getting bigrams and measuring occurrence ...')
-            bigrams = frequent_adjectives(training, bigrams=True,
-                                          filter_function=bigram_filter,
-                                          threshold=5,
-                                          n=n_features*multi_bigrams*2)
-            # note bigram occurences for each class to calculate mutual info
-            bigram_occurrence = [(extract_features(review, bigrams,
-                                                   binarized=True), label)
-                                 for review, label in training]
-            print('Calculating mutual information to decide features ...')
-            mutual_info_for_bigs = mutual_information(bigram_occurrence,
-                                                      list(bigrams))
-            # make a feature set of the bigrams with highest mutual info
-            bigram_features = {feature
-                               for feature, mut_info in sorted(
-                                       mutual_info_for_bigs.items(),
-                                       key=lambda x: x[1], reverse=True
-                                       )[:n_features*multi_bigrams]
-                               if not mut_info == 0.0
-                               }
-        else:
-            bigram_features = frequent_adjectives(
-                    training, bigrams=True, threshold=5,
-                    n=n_features*multi_bigrams, filter_function=bigram_filter
-                    )
+    # make a bigram feature set
+    bigram_features = frequent_adjectives(
+            training, bigrams=True, threshold=5,
+            n=n_features*multi_bigrams, filter_function=bigram_filter
+            )
 
-        print(f'Made a bigram feature set of {len(bigram_features)} of ' +
-              f'{n_features * multi_bigrams} possible.')
+    print(f'Made a bigram feature set of {len(bigram_features)} of ' +
+          f'{n_features * multi_bigrams} possible.')
 
     # train and test each classifier and report results
     for classifier, binary, bigrams, colored, train_clf in CLASSIFIERS:

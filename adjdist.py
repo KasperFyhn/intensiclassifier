@@ -3,6 +3,7 @@ import math
 import dataio
 import string
 import scipy.stats as stats
+import numpy
 
 
 class Word(str):
@@ -81,12 +82,12 @@ class AdjDist(nltk.ConditionalFreqDist):
 
         return copy
 
-    def clustered_distribution(self, sd_cutoff=0.1, comparison='Ø',
+    def clustered_distribution(self, threshold=0.1, comparison='Ø',
                                test_parameters=('mean', 'median', 'mode')):
         """Return a new AdjDist where modifiers are collapsed in clusters based
         on the cluster_conditions() method."""
 
-        clusters = self.cluster_conditions(sd_cutoff=sd_cutoff,
+        clusters = self.cluster_conditions(threshold=threshold,
                                            comparison=comparison,
                                            test_parameters=test_parameters)
         new_cond_samples = [(cluster, obs)
@@ -98,13 +99,12 @@ class AdjDist(nltk.ConditionalFreqDist):
         new['#ALL#'] = self['#ALL#']
         return new
 
-    def cluster_conditions(self, sd_cutoff=0.1, comparison='Ø',
+    def cluster_conditions(self, threshold=0.1, comparison='Ø',
                            min_occurrence_of_mod=5,
                            test_parameters=('mean', 'median', 'mode')):
         """Return a dict with keys 'DOWN', 'AMPL' and 'UNDEC' with their values
         being sets containing the modifiers behaving as such.
-        sd_cutoff is a factor multiplied with the standard deviation to give a
-        a minimum value that the mean, median and mode values must diverge from
+        Threshold is a minimum value that the test paremeters must diverge from
         the comparison condition."""
 
         # prepare the dict to be returned in the end
@@ -117,7 +117,7 @@ class AdjDist(nltk.ConditionalFreqDist):
                 )
         done = False
         for neg in negations:
-            p = self.compare_conditions(neg, comparison, sd_cutoff=sd_cutoff)
+            p = self.compare_conditions(neg, comparison, threshold=threshold)
             # if negation gives higher score than non-negated, word is negative
             # in which case a negative correction is used for measures onwards
             if p == 'AMPL':
@@ -158,7 +158,7 @@ class AdjDist(nltk.ConditionalFreqDist):
             if len(self.observations(cond)) > min_occurrence_of_mod:
                 kind = self.compare_conditions(cond, comparison,
                                                correction=correction,
-                                               sd_cutoff=sd_cutoff,
+                                               threshold=threshold,
                                                test_parameters=test_parameters)
                 clusters[kind].add(
                         (cond, len(self.observations(cond)))
@@ -168,7 +168,7 @@ class AdjDist(nltk.ConditionalFreqDist):
 
     def compare_conditions(self, test_condition: str,
                            comparison_condition: str,
-                           correction=1, sd_cutoff=0.1,
+                           correction=1, threshold=0.1,
                            test_parameters=('mean', 'median', 'mode')):
         """Compare two conditions (i.e. modifiers) based on the given test
         parameters. If test_condition scores higher than the comparison, 'AMPL'
@@ -203,8 +203,8 @@ class AdjDist(nltk.ConditionalFreqDist):
         for measure in test_parameters:
             t = test[measure] * correction
             c = comparison[measure] * correction
-            # if the difference is below the st. deviation threshold
-            if abs(t - c) < sd_cutoff * self.sd(comparison_condition):
+            # if the difference is below the threshold
+            if abs(t - c) < threshold:
                 results['UNDEC'] += 1
             # if the condition is an amplifier
             elif t > c:
@@ -287,6 +287,12 @@ class AdjDist(nltk.ConditionalFreqDist):
             base = len(self._possible_outcomes())
         return stats.entropy(probs, base=base)
 
+    def mean_entropy(self, exclude=('#ALL#')):
+
+        entropies = [self.entropy(cond) for cond in self.conditions()
+                     if cond not in exclude]
+        return numpy.mean(entropies)
+
     def observations(self, condition):
         """Return a sorted list of observations for the passed condition."""
 
@@ -303,7 +309,7 @@ class AdjDist(nltk.ConditionalFreqDist):
         return {outcome for cond in self.values() for outcome in cond.keys()}
 
 
-def clusters_across_adjs(adjdists: dict, sd_cutoff=0.1, comparison='Ø',
+def clusters_across_adjs(adjdists: dict, threshold=0.1, comparison='Ø',
                          min_occurrence_of_mod=5,
                          test_parameters=('mean', 'median', 'mode')):
     """Return a ConditionalFreqDist of clustering of modifiers across a range
@@ -313,8 +319,8 @@ def clusters_across_adjs(adjdists: dict, sd_cutoff=0.1, comparison='Ø',
         (mod_type, obs)
         for dist in adjdists.values()
         for mod_type, modifiers in dist.cluster_conditions(
-            sd_cutoff=sd_cutoff, comparison=comparison,
-            min_occurrence_of_mod=5,
+            threshold=threshold, comparison=comparison,
+            min_occurrence_of_mod=min_occurrence_of_mod,
             test_parameters=test_parameters
         ).items()
         for modifier, count in modifiers if not modifier == 'Ø'
@@ -342,16 +348,20 @@ def resolve_sentence_polarities(data):
     for review, label in data:
         sentences = [[]]
         for word in review:
-            if word not in string.punctuation:
+            if word not in set.union(set(string.punctuation),
+                                     {'however', 'but', 'yet'}
+                                     ):
                 sentences[-1].append(word)
             else:
                 sentences[-1].append(word)
                 sentences.append([])
         resolved_sents = []
         for sentence in sentences:
-            if 'not' in sentence or 'never' in sentence or "n't" in sentence:
+            if len(set.intersection(set(sentence),
+                                    {'not', 'never', "n't", 'nothing'})
+                ) > 0:
                 for word in sentence:
-                    word.set_polarity(True)
+                    word.negated = True
             resolved_sents.append(sentence)
 
         flattened_sents = [word for sentence in resolved_sents
@@ -359,7 +369,6 @@ def resolve_sentence_polarities(data):
         resolved_data.append((flattened_sents, label))
 
     return resolved_data
-
 
 def frequent_adjectives(data, n=None, threshold=10, bigrams=False,
                         filter_function=None):
