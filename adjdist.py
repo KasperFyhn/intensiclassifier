@@ -64,10 +64,9 @@ class AdjDist(nltk.ConditionalFreqDist):
         threshold."""
 
         cond_samples = [(cond, obs)
-                        for cond, dist in self.items()
-                        for label, count in dist.items()
-                        for obs in [label] * count
-                        if count > conds_higher_than]
+                        for cond in self.keys()
+                        for obs in self.observations(cond)
+                        if len(self.observations(cond)) > conds_higher_than]
         return type(self)(cond_samples)
 
     def relative_frequencies(self):
@@ -107,6 +106,9 @@ class AdjDist(nltk.ConditionalFreqDist):
         Threshold is a minimum value that the test paremeters must diverge from
         the comparison condition."""
 
+        if comparison == 'Ø' and 'Ø' not in self.conditions():
+            comparison = '#ALL#'
+
         # prepare the dict to be returned in the end
         clusters = {'DOWN': set(), 'AMPL': set(), 'UNDEC': set(), 'NEG': set()}
 
@@ -134,8 +136,6 @@ class AdjDist(nltk.ConditionalFreqDist):
         if not done:
             outcomes = self._possible_outcomes()
             overall_mean = sum(outcomes) / len(outcomes)
-            if comparison == 'Ø' and 'Ø' not in self.conditions():
-                comparison = '#ALL#'
             # if negative word, use a minus factor for measures onwards
             if self.overall_score(comparison) < overall_mean * 0.8:
                 correction = -1
@@ -281,17 +281,14 @@ class AdjDist(nltk.ConditionalFreqDist):
         is set as None (which it is as default), the log base of entropy is the
         number of possible outcomes in the distribution."""
 
+        if condition == 'Ø' and 'Ø' not in self.conditions():
+            condition = '#ALL#'
+
         prob_dist = nltk.MLEProbDist(self[condition])
         probs = [prob_dist.prob(bin_) for bin_ in prob_dist.samples()]
         if not base:
             base = len(self._possible_outcomes())
         return stats.entropy(probs, base=base)
-
-    def mean_entropy(self, exclude=('#ALL#')):
-
-        entropies = [self.entropy(cond) for cond in self.conditions()
-                     if cond not in exclude]
-        return numpy.mean(entropies)
 
     def observations(self, condition):
         """Return a sorted list of observations for the passed condition."""
@@ -372,9 +369,10 @@ def resolve_sentence_polarities(data):
 
 def frequent_adjectives(data, n=None, threshold=10, bigrams=False,
                         filter_function=None):
-    """Return a set of N adjectives (and adjectival verbs) that are the most
-    frequent across the data and more frequent than the given threshold. If
-    n_adjs is None, all adjs above the threshold will be returned."""
+    """Return a list of N adjectives (and adjectival verbs) that are the most
+    frequent across the data and more frequent than the given threshold in
+    decreasing order. If n_adjs is None, all adjs above the threshold will be
+    returned."""
 
     # get all adjs from the data and make a frequency distribution
     adjs = nltk.FreqDist(
@@ -398,7 +396,7 @@ def frequent_adjectives(data, n=None, threshold=10, bigrams=False,
     if n and n > len(adjs):
         n = None
     # return the n most common adjs above the threshold
-    return {adj for adj, freq in adjs.most_common(n) if freq >= threshold}
+    return [adj for adj, freq in adjs.most_common(n) if freq >= threshold]
 
 
 def load_data(file):

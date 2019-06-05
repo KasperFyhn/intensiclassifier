@@ -20,7 +20,7 @@ def extract_features(review: list, features: set, binarized=False,
     if bigrams or colored:
         # make bigrams, but keep only relevant ones - i.e. with adjectives
         relevant_bigrams = [bigram for bigram in nltk.bigrams(review)
-                            if bigram in features or bigram[1] in features]
+                            if bigram[1] in features]
 
     if colored:
         fdist = nltk.FreqDist()
@@ -47,7 +47,12 @@ def extract_features(review: list, features: set, binarized=False,
                     # we want to know. Therefore, the label must be kept
                     if kind == 'UNDEC':
                         kind = ''
-                # if not preceded as modifier, count as raw
+                    # the adv-adj pair is only a meaningful feature if the adj
+                    # has been seen with that kind of modifier before. If not,
+                    # treat it as a raw occurrence
+                    if not kind == '' and kind+adj not in features:
+                        kind = ''
+                # if not preceded by a modifier, count as raw
                 else:
                     kind = ''
                 # increment the count of the colored adj
@@ -134,7 +139,7 @@ def accuracy(clf, test):
 
 
 # load data, make folds and prepare soon-to-be dataframes
-data = load_data(r"processed_data\imdb_movies")
+data = load_data(r"processed_data\imdb_movies_binary_2k")
 # binarize data
 # data = [(review, '0' if label in ['1.0', '2.0'] else '1')
 #         for review, label in data]
@@ -175,28 +180,39 @@ for i in range(n_folds):
     # append correct test labels to predictions dict
     predictions['correct'] += [label for review, label in test]
 
-    if highest_entropy:
-        # get some frequent adjectives as potential features
-        adjs = frequent_adjectives(training, threshold=30)
-    else:
-        adjs = frequent_adjectives(training, n=n_features)
+    # get frequent adjectives as potential features
+    frequent_adjs = frequent_adjectives(training, threshold=30)
 
     print('Making balanced dataset for AdjDists ...')
     # if one or more classes is over-represented, adj dists will be skewed
     balanced_training = dataio.make_balanced_dataset(training,
                                                      size=len(training))
-    adj_dists = make_adj_dists(adjs, balanced_training)
+    adj_dists = make_adj_dists(frequent_adjs, balanced_training)
 
     if highest_entropy:
-        # sort out highly entropic adjectives
-        adj_entropy = sorted([(adj, dist.entropy('Ø'))
-                              for adj, dist in adj_dists.items()],
-                             key=lambda x: x[1])[:n_features]
-        adj_dists = {adj: adj_dists[adj] for adj, entropy in adj_entropy
-                     if entropy < highest_entropy}
-        print('Reduced number of AdjDists to', len(adj_dists))
+        # sort out highly entropic adjectives from the adj_dists
+        entropy = {adj: dist.entropy('Ø') for adj, dist in adj_dists.items()}
+        for adj in entropy.keys():
+            if entropy[adj] > highest_entropy:
+                del adj_dists[adj]
+        print(f'Reduced number of adj_dists to {len(adj_dists)}.')
 
-    fold_features = adj_dists.keys()
+        # make set of frequent adjs below enthropy threshold
+        fold_features = set()
+        adjs = iter(frequent_adjs)
+        while len(fold_features) < n_features:
+            try:
+                adj = next(adjs)
+            except StopIteration:
+                print('Oops! The requested number of features is too high!')
+                break
+            if entropy[adj] <= highest_entropy:
+                fold_features.add(adj)
+
+    # if not looking at entropy
+    else:
+        fold_features = set(frequent_adjs[:n_features])
+
     print(f'Made unigram feature set of {len(fold_features)} of {n_features}' +
           ' possible')
 
@@ -247,13 +263,7 @@ for i in range(n_folds):
                                     threshold=threshold,
                                     min_occurrence_of_mod=min_n_mod_count)
     ALL_MODIFIERS = {}
-    try:
-        modifiers = set.union(*[set(mods.keys())
-                                for mods in clusters.values()]
-                              )
-    except TypeError:
-        print('oops')
-
+    modifiers = set.union(*[set(mods.keys()) for mods in clusters.values()])
     for mod in modifiers:
         counts = {kind: dist[mod] for kind, dist in clusters.items()
                   if mod in dist.keys()}
